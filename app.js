@@ -1,0 +1,610 @@
+// Myeloid Atlas Explorer — static client for the files written by scripts/build_explorer.py
+// (format: DATA_FORMAT.md). No build step; regl-scatterplot (WebGL) for the map, Plotly for charts.
+import createScatterplot from "https://cdn.jsdelivr.net/npm/regl-scatterplot@1.14.1/+esm";
+
+const $ = (s) => document.querySelector(s);
+const $$ = (s) => [...document.querySelectorAll(s)];
+const css = (v) => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+const GREY = "#c8c8c8";
+const SEQ = ["#eeeeec", "#c6dbef", "#9ecae1", "#6baed6", "#4292c6", "#2171b5", "#08519c", "#08306b"];
+const DIV = ["#1f4e9e", "#4a7fc1", "#8fb3dc", "#d9d9d9", "#e8a48c", "#cf5b45", "#9e1b1b"];
+const CT_NAME = {
+  HSPC: "HSC/MPP", CD14_Mono: "Classical monocyte", CD16_Mono: "Non-classical monocyte", cDC: "cDC", pDC: "pDC",
+  NK_CD56low: "NK CD56dim", NK_CD56hi: "NK CD56bright", CD4_Naive_T_cell: "CD4 naive T", CD4_Memory_T_cell: "CD4 memory T",
+  CD8_Naive_T_cell: "CD8 naive T", CD8_Memory_T_cell: "CD8 memory T", Treg: "Treg", MAIT: "MAIT", Naive_B_cell: "Naive B",
+  Plasmablast: "Plasmablast",
+};
+const ctName = (c) => CT_NAME[c] || c;
+const FILTER_FIELDS = ["gse", "condition", "level1", "sex", "timepoint"];
+const GROUP_FIELDS = ["level2", "level1", "condition", "gse", "sex", "timepoint", "genotype", "mutation_group"];
+
+const S = {
+  atlas: null, meta: null, n: 0, x: null, y: null, obs: {}, field: {}, l2: {},
+  geneCache: new Map(), scoreCache: new Map(), colour: { type: "field", key: "level2" },
+  emb: "global", filters: {}, isolate: null, selection: null, order: null, results: null,
+};
+let plot = null;
+let mouse = { x: 0, y: 0 };
+
+// ── colour helpers ────────────────────────────────────────────────────────
+function hexToRgb(h) { const n = parseInt(h.slice(1), 16); return [(n >> 16) & 255, (n >> 8) & 255, n & 255]; }
+function ramp(stops, k = 256) {
+  const rgb = stops.map(hexToRgb);
+  return Array.from({ length: k }, (_, i) => {
+    const t = (i / (k - 1)) * (rgb.length - 1), a = Math.floor(t), b = Math.min(a + 1, rgb.length - 1), f = t - a;
+    const c = rgb[a].map((v, j) => Math.round(v + (rgb[b][j] - v) * f));
+    return "#" + c.map((v) => v.toString(16).padStart(2, "0")).join("");
+  });
+}
+const SEQ_RAMP = ramp(SEQ), DIV_RAMP = ramp(DIV);
+
+// ── data loading ──────────────────────────────────────────────────────────
+const base = (a) => `data/${a.toLowerCase()}/`;
+async function buf(url) {
+  const r = await fetch(url);
+  if (!r.ok) throw new Error(`${url}: ${r.status}`);
+  let ab = await r.arrayBuffer();
+  const u = new Uint8Array(ab, 0, 2);
+  if (u[0] === 0x1f && u[1] === 0x8b) {         // gzip not already decoded by the server
+    ab = await new Response(new Blob([ab]).stream().pipeThrough(new DecompressionStream("gzip"))).arrayBuffer();
+  }
+  return ab;
+}
+const typed = (ab, dtype) => dtype === "uint16" ? new Uint16Array(ab) : new Uint8Array(ab);
+
+async function loadAtlas(atlas) {
+  $("#loading").hidden = false;
+  $("#loading").textContent = `Loading ${atlas}…`;
+  const meta = await (await fetch(base(atlas) + "meta.json")).json();
+  const n = meta.n_cells;
+  const uv = new Uint16Array(await buf(base(atlas) + "umap.bin"));
+  const [x, y] = toNdc(uv, meta.umap_range);
+  const obs = {}, field = {};
+  await Promise.all(meta.fields.map(async (f) => {
+    field[f.id] = f;
+    obs[f.id] = typed(await buf(`${base(atlas)}obs/${f.id}.bin`), f.dtype);
+  }));
+  Object.assign(S, { atlas, meta, n, x, y, obs, field, l2: {}, geneCache: new Map(), scoreCache: new Map(),
+    filters: {}, isolate: null, selection: null, emb: "global" });
+  S.shuffle = shuffled(n);
+  $("#loading").hidden = true;
+}
+
+function toNdc(uv, r) {
+  const n = uv.length / 2, x = new Float32Array(n), y = new Float32Array(n);
+  const w = r[1] - r[0], h = r[3] - r[2], s = Math.max(w, h);
+  for (let i = 0; i < n; i++) {
+    x[i] = ((uv[2 * i] / 65535) * w - w / 2) / s * 1.9;
+    y[i] = ((uv[2 * i + 1] / 65535) * h - h / 2) / s * 1.9;
+  }
+  return [x, y];
+}
+
+async function lineage(lin) {
+  if (S.l2[lin]) return S.l2[lin];
+  const info = S.meta.l2umap[lin], ab = await buf(`${base(S.atlas)}l2umap/${lin}.bin`);
+  const ids = new Uint32Array(ab.slice(0, info.n * 4));
+  const [x, y] = toNdc(new Uint16Array(ab.slice(info.n * 4)), info.range);
+  return (S.l2[lin] = { ids, x, y });
+}
+
+async function gene(g) {
+  if (S.geneCache.has(g)) return S.geneCache.get(g);
+  const rec = S.meta.genes.find((r) => r[0] === g);
+  if (!rec) return null;
+  const u = new Uint8Array(await buf(`${base(S.atlas)}genes/${encodeURIComponent(g)}.bin.gz`));
+  const n = S.n, nb = Math.ceil(n / 8), v = new Float32Array(n), scale = rec[1] / 255;
+  let k = nb;
+  for (let i = 0; i < n; i++) if (u[i >> 3] & (1 << (i & 7))) v[i] = u[k++] * scale;
+  S.geneCache.set(g, v);
+  return v;
+}
+
+async function score(kind, name) {
+  const key = kind + "|" + name;
+  if (S.scoreCache.has(key)) return S.scoreCache.get(key);
+  const list = kind === "cytokine" ? S.meta.cytokine_scores : S.meta.module_scores;
+  const rec = list.find((r) => r.name === name);
+  const raw = new Int8Array(await buf(`${base(S.atlas)}scores/${rec.file}.bin.gz`));
+  const v = new Float32Array(S.n);
+  for (let i = 0; i < S.n; i++) v[i] = raw[i] === -127 ? NaN : raw[i] / S.meta.score_scale;
+  S.scoreCache.set(key, v);
+  return v;
+}
+
+async function results() {
+  if (S.results) return S.results;
+  const names = ["meta", "study_effects", "module_meta", "propeller", "studies", "modules"];
+  const out = {};
+  await Promise.all(names.map(async (k) => {
+    const j = await (await fetch(`data/results/${k}.json`)).json();
+    out[k] = j.data.map((r) => Object.fromEntries(j.columns.map((c, i) => [c, r[i]])));
+  }));
+  return (S.results = out);
+}
+
+function shuffled(n) {
+  const a = new Uint32Array(n);
+  for (let i = 0; i < n; i++) a[i] = i;
+  let s = 12345;
+  for (let i = n - 1; i > 0; i--) { s = (s * 1103515245 + 12345) & 0x7fffffff; const j = s % (i + 1); [a[i], a[j]] = [a[j], a[i]]; }
+  return a;
+}
+
+// ── filters ───────────────────────────────────────────────────────────────
+function passes(i) {
+  for (const [fid, set] of Object.entries(S.filters)) if (set.size && !set.has(S.obs[fid][i])) return false;
+  return true;
+}
+function filterMask() {
+  const m = new Uint8Array(S.n);
+  for (let i = 0; i < S.n; i++) m[i] = passes(i) ? 1 : 0;
+  return m;
+}
+
+// ── the map ───────────────────────────────────────────────────────────────
+async function currentValues() {
+  const c = S.colour;
+  if (c.type === "field") {
+    const f = S.field[c.key];
+    if (f.kind === "cat") return { kind: "cat", codes: S.obs[c.key], f };
+    const q = S.obs[c.key], v = new Float32Array(S.n);
+    for (let i = 0; i < S.n; i++) v[i] = q[i] === 0 ? NaN : f.range[0] + ((q[i] - 1) / 65534) * (f.range[1] - f.range[0]);
+    return { kind: "num", v, label: f.label, seq: true };
+  }
+  if (c.type === "gene") return { kind: "num", v: await gene(c.key), label: `${c.key} (log-normalised)`, seq: true, gene: true };
+  return { kind: "num", v: await score(c.type, c.key), label: `${c.key} response (z within cell type)`, seq: false };
+}
+
+async function draw() {
+  if (!plot) return;
+  let idx, X, Y;
+  if (S.emb === "global") { idx = null; X = S.x; Y = S.y; } else { const L = await lineage(S.emb); idx = L.ids; X = L.x; Y = L.y; }
+  const m = idx ? idx.length : S.n, cell = (j) => (idx ? idx[j] : j);
+  const val = await currentValues(), mask = filterMask();
+  const active = new Uint8Array(m), z = new Float32Array(m);
+  let colours, lo = 0, hi = 1;
+  if (val.kind === "cat") {
+    colours = [...val.f.colours, GREY];
+    for (let j = 0; j < m; j++) {
+      const i = cell(j), c = val.codes[i];
+      active[j] = mask[i] && (!S.isolate || S.isolate.has(c)) ? 1 : 0;
+      z[j] = active[j] ? c : colours.length - 1;
+    }
+  } else {
+    const vals = [];
+    for (let j = 0; j < m; j++) { const i = cell(j); if (mask[i] && Number.isFinite(val.v[i]) && (!val.gene || val.v[i] > 0)) vals.push(val.v[i]); }
+    vals.sort((a, b) => a - b);
+    if (val.seq) { lo = val.gene ? 0 : vals[Math.floor(vals.length * 0.01)] ?? 0; hi = vals[Math.floor(vals.length * 0.99)] ?? 1; }
+    else { const a = Math.max(Math.abs(vals[Math.floor(vals.length * 0.02)] ?? 2), Math.abs(vals[Math.floor(vals.length * 0.98)] ?? 2)); lo = -a; hi = a; }
+    if (!(hi > lo)) hi = lo + 1;
+    colours = val.seq ? SEQ_RAMP : DIV_RAMP;
+    for (let j = 0; j < m; j++) {
+      const i = cell(j), v = val.v[i];
+      active[j] = mask[i] && Number.isFinite(v) ? 1 : 0;
+      z[j] = Number.isFinite(v) ? Math.min(1, Math.max(0, (v - lo) / (hi - lo))) : 0;
+    }
+  }
+  // draw order: inactive first; categorical shuffled, continuous ascending (high values on top)
+  const ord = Array.from({ length: m }, (_, j) => j);
+  if (val.kind === "cat") { const rank = new Uint32Array(m); const sh = idx ? shuffled(m) : S.shuffle; for (let k = 0; k < m; k++) rank[sh[k]] = k; ord.sort((a, b) => active[a] - active[b] || rank[a] - rank[b]); }
+  else ord.sort((a, b) => active[a] - active[b] || z[a] - z[b]);
+  const px = new Float32Array(m), py = new Float32Array(m), pz = new Float32Array(m), pw = new Float32Array(m);
+  ord.forEach((j, k) => { px[k] = X[j]; py[k] = Y[j]; pz[k] = z[j]; pw[k] = active[j]; });
+  S.order = Uint32Array.from(ord, (j) => cell(j));
+  plot.set({ colorBy: "valueA", opacityBy: "valueB", opacity: [0.08, 0.85], pointColor: colours,
+    pointSize: +$("#psize").value });
+  await plot.draw({ x: px, y: py, valueA: pz, valueB: pw },
+    { zDataType: val.kind === "cat" ? "categorical" : "continuous", wDataType: "categorical" });
+  legend(val, mask, lo, hi);
+  caption(val, mask);
+  writeHash();
+}
+
+function caption(val, mask) {
+  const shown = mask.reduce((a, b) => a + b, 0);
+  const emb = S.emb === "global" ? "whole-atlas UMAP" : `${S.emb} lineage UMAP (Level 2 re-embedding)`;
+  $("#plot-caption").textContent = `${S.atlas}: ${shown.toLocaleString()} of ${S.n.toLocaleString()} subsampled cells shown ` +
+    `(atlas total ${S.meta.n_cells_total.toLocaleString()}) · ${emb}`;
+}
+
+function legend(val, mask, lo, hi) {
+  const el = $("#legend");
+  el.innerHTML = "";
+  if (val.kind === "cat") {
+    $("#legend-title").textContent = val.f.label;
+    const counts = new Array(val.f.categories.length).fill(0);
+    for (let i = 0; i < S.n; i++) if (mask[i]) counts[val.codes[i]]++;
+    const order = counts.map((c, k) => k).filter((k) => counts[k] > 0).sort((a, b) => counts[b] - counts[a]);
+    if (S.isolate) el.insertAdjacentHTML("beforeend", `<button class="link" id="iso-clear">show all</button>`);
+    order.slice(0, 80).forEach((k) => {
+      const d = document.createElement("div");
+      d.className = "legend-item" + (S.isolate && !S.isolate.has(k) ? " off" : "");
+      d.innerHTML = `<span class="sw" style="background:${val.f.colours[k]}"></span><span class="lbl" title="${esc(val.f.categories[k])}">${esc(pretty(val.f.categories[k]))}</span><span class="n">${counts[k].toLocaleString()}</span>`;
+      d.onclick = (e) => {
+        if (!S.isolate || !e.shiftKey && !(e.metaKey || e.ctrlKey)) S.isolate = S.isolate && S.isolate.size === 1 && S.isolate.has(k) ? null : new Set([k]);
+        else S.isolate.has(k) ? S.isolate.delete(k) : S.isolate.add(k);
+        if (S.isolate && !S.isolate.size) S.isolate = null;
+        draw();
+      };
+      el.appendChild(d);
+    });
+    if (order.length > 80) el.insertAdjacentHTML("beforeend", `<p class="muted">+ ${order.length - 80} more (use filters)</p>`);
+    el.insertAdjacentHTML("beforeend", `<p class="muted" style="font-size:11px">Click to isolate; Ctrl/Shift-click to add.</p>`);
+    const b = $("#iso-clear"); if (b) b.onclick = () => { S.isolate = null; draw(); };
+  } else {
+    $("#legend-title").textContent = val.label;
+    const grad = (val.seq ? SEQ : DIV).join(",");
+    el.innerHTML = `<div class="gradient" style="background:linear-gradient(90deg,${grad})"></div>
+      <div class="grad-labels"><span>${fmt(lo)}</span><span>${val.seq ? "" : "0"}</span><span>${fmt(hi)}</span></div>
+      <p class="muted" style="font-size:12px">${val.gene ? "Grey-white: no detected expression. Colour scale capped at the 99th percentile." :
+        val.seq ? "Scale from 1st to 99th percentile." :
+        "Blue: lower, red: higher response than other cells of the same type. Faded cells: no signature for this cytokine in their cell type."}</p>`;
+    if (S.colour.type !== "field" && S.colour.type !== "gene") {
+      const list = (S.colour.type === "cytokine" ? S.meta.cytokine_scores : S.meta.module_scores).find((r) => r.name === S.colour.key);
+      el.insertAdjacentHTML("beforeend", `<p style="font-size:12px"><b>Scored cell types:</b> ${list.celltypes.map(ctName).join(", ")}</p>`);
+    }
+  }
+}
+
+const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const pretty = (s) => String(s).replace(/_/g, " ");
+const fmt = (v) => (Math.abs(v) >= 100 ? v.toFixed(0) : Math.abs(v) >= 1 ? v.toFixed(1) : v.toFixed(2));
+const catOf = (fid, i) => { const f = S.field[fid]; return f ? f.categories[S.obs[fid][i]] : ""; };
+
+async function tooltip(i) {
+  const t = $("#tooltip");
+  if (i == null) { t.hidden = true; return; }
+  const c = S.order[i];
+  let extra = "";
+  if (S.colour.type === "gene") { const v = (await gene(S.colour.key))[c]; extra = `<br><b>${S.colour.key}</b>: ${v.toFixed(2)}`; }
+  else if (S.colour.type !== "field") { const v = (await score(S.colour.type, S.colour.key))[c]; extra = `<br><b>${S.colour.key}</b>: ${Number.isFinite(v) ? v.toFixed(2) : "not scored"}`; }
+  else if (!["level1", "level2", "gse", "condition", "donor"].includes(S.colour.key)) {
+    const f = S.field[S.colour.key];
+    extra = `<br><b>${f.label}</b>: ${f.kind === "cat" ? esc(catOf(f.id, c)) : fmt(f.range[0] + ((S.obs[f.id][c] - 1) / 65534) * (f.range[1] - f.range[0]))}`;
+  }
+  t.innerHTML = `<b>${esc(pretty(catOf("level2", c)))}</b> <span class="muted">(${esc(pretty(catOf("level1", c)))})</span><br>` +
+    `${esc(catOf("gse", c))} · ${esc(catOf("condition", c))}<br>donor ${esc(catOf("donor", c))}${extra}`;
+  const r = $("#canvas").getBoundingClientRect();
+  t.style.left = Math.min(mouse.x - r.left + 14, r.width - 290) + "px";
+  t.style.top = mouse.y - r.top + 14 + "px";
+  t.hidden = false;
+}
+
+function selectionSummary(points) {
+  if (!points || !points.length) { $("#selection").hidden = true; S.selection = null; return; }
+  const cells = points.map((k) => S.order[k]);
+  S.selection = cells;
+  const block = (fid, title) => {
+    const f = S.field[fid]; if (!f) return "";
+    const cnt = new Map();
+    cells.forEach((c) => cnt.set(S.obs[fid][c], (cnt.get(S.obs[fid][c]) || 0) + 1));
+    const top = [...cnt].sort((a, b) => b[1] - a[1]).slice(0, 8);
+    return `<p style="margin:6px 0 2px;font-size:12px"><b>${title}</b></p><div class="bars">` + top.map(([k, v]) =>
+      `<div class="bar"><span class="lbl" title="${esc(f.categories[k])}">${esc(pretty(f.categories[k]))}</span><span class="b" style="width:${(v / cells.length) * 70}px;background:${f.colours[k]}"></span><span class="n">${Math.round((100 * v) / cells.length)}%</span></div>`).join("") + "</div>";
+  };
+  $("#sel-summary").innerHTML = `<p style="font-size:12px">${cells.length.toLocaleString()} cells</p>` +
+    block("level2", "Cell type (Level 2)") + block("condition", "Condition") + block("gse", "Study");
+  $("#selection").hidden = false;
+}
+
+// ── controls ──────────────────────────────────────────────────────────────
+function buildControls() {
+  const groups = {};
+  S.meta.fields.forEach((f) => (groups[f.group || "Other"] ||= []).push(f));
+  const order = ["Cell types", "CellTypist", "Author labels", "Donors (curated)", "Samples and disease", "Quality control", "Other"];
+  $("#colour").innerHTML = order.filter((g) => groups[g]).map((g) =>
+    `<optgroup label="${g}">${groups[g].map((f) => `<option value="${f.id}">${esc(f.label)}</option>`).join("")}</optgroup>`).join("");
+  $("#emb").innerHTML = `<option value="global">Whole atlas (UMAP)</option>` +
+    Object.keys(S.meta.l2umap).map((l) => `<option value="${l}">${pretty(l)} lineage (Level 2 map)</option>`).join("");
+  $("#gene-list").innerHTML = S.meta.genes.map((g) => `<option value="${g[0]}">`).join("");
+  $("#gene-note").textContent = `${S.meta.genes.length.toLocaleString()} genes available (markers, cytokine signatures, ligands/receptors, variable genes)`;
+  $("#cytokine").innerHTML = `<option value="">— choose —</option>` + S.meta.cytokine_scores.map((r) =>
+    `<option value="${esc(r.name)}">${esc(r.name)} (${r.celltypes.length} cell type${r.celltypes.length > 1 ? "s" : ""})</option>`).join("");
+  $("#module").innerHTML = `<option value="">— choose —</option>` + S.meta.module_scores.map((r) =>
+    `<option value="${esc(r.name)}">${esc(r.name.replace("other: ", ""))}</option>`).join("");
+  // filters
+  $("#filters").innerHTML = FILTER_FIELDS.filter((f) => S.field[f]).map((fid) => {
+    const f = S.field[fid];
+    return `<div class="fgroup"><b>${esc(f.label)}</b><div class="chips" data-fid="${fid}">` +
+      f.categories.map((c, k) => `<span class="chip" data-k="${k}" title="${f.counts[k]} cells">${esc(pretty(c))}</span>`).join("") + "</div></div>";
+  }).join("");
+  $$("#filters .chips").forEach((box) => box.addEventListener("click", (e) => {
+    const chip = e.target.closest(".chip"); if (!chip) return;
+    const fid = box.dataset.fid, k = +chip.dataset.k;
+    const set = (S.filters[fid] ||= new Set());
+    set.has(k) ? set.delete(k) : set.add(k);
+    chip.classList.toggle("on");
+    updateFilterCount(); draw();
+  }));
+  // compare tab selects
+  const gopts = GROUP_FIELDS.filter((f) => S.field[f]).concat(S.meta.fields.filter((f) => f.id.startsWith("ct_") && f.kind === "cat").map((f) => f.id));
+  const opt = (ids) => ids.map((id) => `<option value="${id}">${esc(S.field[id].label)}</option>`).join("");
+  $("#dot-group").innerHTML = opt(gopts);
+  $("#dist-group").innerHTML = opt(GROUP_FIELDS.filter((f) => S.field[f]));
+  $("#dist-group").value = "condition";
+  $("#dist-ct").innerHTML = `<option value="">all cell types</option>` + S.field.level2.categories.map((c, k) => `<option value="${k}">${esc(pretty(c))}</option>`).join("");
+  $("#xt-field").innerHTML = opt(S.meta.fields.filter((f) => f.kind === "cat" && (f.id.startsWith("ct_") || f.group === "Author labels" || f.id === "level1")).map((f) => f.id));
+  const mk = S.meta.markers;
+  $("#dot-preset").innerHTML = `<option value="">—</option><option value="l1">Level 1 lineage markers</option>` +
+    Object.keys(mk.level2).map((l) => `<option value="l2:${l}">${pretty(l)} sub-state markers</option>`).join("");
+  updateFilterCount();
+}
+
+function updateFilterCount() {
+  const n = Object.values(S.filters).filter((s) => s.size).length;
+  $("#filter-count").textContent = n ? `(${n} active)` : "";
+}
+
+function setColour(type, key) {
+  S.colour = { type, key }; S.isolate = null;
+  if (type !== "field") $("#colour").value = "";
+  if (type !== "gene") $("#gene").value = "";
+  if (type !== "cytokine") $("#cytokine").value = "";
+  if (type !== "module") $("#module").value = "";
+  draw();
+}
+
+// ── Compare tab ───────────────────────────────────────────────────────────
+const layoutBase = () => ({
+  paper_bgcolor: "rgba(0,0,0,0)", plot_bgcolor: "rgba(0,0,0,0)", font: { color: css("--ink"), size: 11 },
+  margin: { l: 150, r: 20, t: 20, b: 80 }, xaxis: { gridcolor: css("--line"), zerolinecolor: css("--line") },
+  yaxis: { gridcolor: css("--line"), zerolinecolor: css("--line"), automargin: true },
+});
+const P = (el, data, layout) => window.Plotly.react(el, data, Object.assign(layoutBase(), layout), { displaylogo: false, responsive: true });
+
+function groupCells(fid, minCells = 20) {
+  const mask = filterMask(), codes = S.obs[fid], f = S.field[fid], cells = new Map();
+  for (let i = 0; i < S.n; i++) if (mask[i]) { const c = codes[i]; (cells.get(c) || cells.set(c, []).get(c)).push(i); }
+  let keys = [...cells.keys()].filter((k) => cells.get(k).length >= minCells && f.categories[k] !== "NA");
+  if (fid === "level2") { const par = S.meta.level2_parent; keys.sort((a, b) => (par[f.categories[a]] || "").localeCompare(par[f.categories[b]] || "") || f.categories[a].localeCompare(f.categories[b])); }
+  else keys.sort((a, b) => cells.get(b).length - cells.get(a).length);
+  return keys.slice(0, 50).map((k) => ({ k, name: pretty(f.categories[k]), cells: cells.get(k) }));
+}
+
+async function dotPlot() {
+  const avail = new Set(S.meta.genes.map((g) => g[0]));
+  const names = $("#dot-genes").value.split(/[\s,;]+/).map((s) => s.trim()).filter(Boolean);
+  const genes = names.filter((g) => avail.has(g)), missing = names.filter((g) => !avail.has(g));
+  if (!genes.length) { $("#dot-plot").innerHTML = `<p class="muted">None of these genes are in the panel.</p>`; return; }
+  const groups = groupCells($("#dot-group").value);
+  const xs = [], ys = [], size = [], col = [], text = [];
+  for (const g of genes.slice(0, 40)) {
+    const v = await gene(g);
+    for (const grp of groups) {
+      let s = 0, nz = 0; for (const i of grp.cells) { s += v[i]; if (v[i] > 0) nz++; }
+      const frac = nz / grp.cells.length, mean = s / grp.cells.length;
+      xs.push(g); ys.push(grp.name); size.push(4 + 22 * Math.sqrt(frac)); col.push(mean);
+      text.push(`${g} in ${grp.name}<br>${(100 * frac).toFixed(1)}% expressing<br>mean ${mean.toFixed(2)}<br>${grp.cells.length} cells`);
+    }
+  }
+  P("dot-plot", [{ type: "scatter", mode: "markers", x: xs, y: ys, text, hoverinfo: "text",
+    marker: { size, color: col, colorscale: SEQ.map((c, i) => [i / (SEQ.length - 1), c]), line: { width: 0.5, color: css("--line") },
+      colorbar: { title: { text: "mean", side: "right" }, thickness: 10 } } }],
+  { height: Math.max(360, 26 * groups.length + 120), xaxis: { tickangle: -45 }, yaxis: { autorange: "reversed", automargin: true } });
+  if (missing.length) $("#dot-plot").insertAdjacentHTML("afterbegin", `<p class="muted">Not in the gene panel: ${esc(missing.join(", "))}</p>`);
+}
+
+async function featureValues(kind, name) {
+  if (kind === "gene") return gene(name);
+  return score(kind, name);
+}
+
+function quantile(sorted, q) { const p = (sorted.length - 1) * q, a = Math.floor(p), b = Math.ceil(p); return sorted[a] + (sorted[b] - sorted[a]) * (p - a); }
+
+async function distPlot() {
+  const kind = $("#dist-kind").value, name = $("#dist-name").value.trim();
+  const v = await featureValues(kind, name);
+  if (!v) { $("#dist-plot").innerHTML = `<p class="muted">Feature not found.</p>`; return; }
+  const ct = $("#dist-ct").value;
+  const groups = groupCells($("#dist-group").value, 10);
+  const xs = [], q1 = [], med = [], q3 = [], lo = [], hi = [], mean = [], frac = [];
+  for (const g of groups) {
+    const vals = g.cells.filter((i) => ct === "" || S.obs.level2[i] === +ct).map((i) => v[i]).filter(Number.isFinite).sort((a, b) => a - b);
+    if (vals.length < 10) continue;
+    xs.push(`${g.name} (n=${vals.length})`); q1.push(quantile(vals, 0.25)); med.push(quantile(vals, 0.5)); q3.push(quantile(vals, 0.75));
+    lo.push(quantile(vals, 0.05)); hi.push(quantile(vals, 0.95)); mean.push(vals.reduce((a, b) => a + b, 0) / vals.length);
+    frac.push(vals.filter((x) => x > 0).length / vals.length);
+  }
+  if (!xs.length) { $("#dist-plot").innerHTML = `<p class="muted">Not enough cells (≥ 10 per group) for this selection.</p>`; return; }
+  P("dist-plot", [{ type: "box", x: xs, q1, median: med, q3, lowerfence: lo, upperfence: hi, mean, boxpoints: false,
+    marker: { color: css("--accent") }, line: { width: 1.2 }, name, hovertemplate: "%{x}<extra></extra>" }],
+  { yaxis: { title: kind === "gene" ? `${name} (log-normalised)` : `${name} (z within cell type)` }, xaxis: { tickangle: -35, automargin: true },
+    margin: { l: 70, r: 20, t: 20, b: 120 },
+    annotations: kind === "gene" ? [{ text: "Box: 25–75%, whiskers 5–95% of cells; many cells have zero counts", showarrow: false, xref: "paper", yref: "paper", x: 0, y: 1.06, font: { size: 11, color: css("--muted") } }] : [] });
+}
+
+function crossTab() {
+  const fid = $("#xt-field").value, mask = filterMask(), a = S.obs.level2, b = S.obs[fid];
+  const fa = S.field.level2, fb = S.field[fid];
+  const M = Array.from({ length: fa.categories.length }, () => new Array(fb.categories.length).fill(0));
+  for (let i = 0; i < S.n; i++) if (mask[i]) M[a[i]][b[i]]++;
+  const rows = fa.categories.map((c, k) => k).filter((k) => M[k].reduce((x, y) => x + y, 0) >= 20);
+  const colTot = fb.categories.map((c, j) => rows.reduce((s, k) => s + M[k][j], 0));
+  const cols = colTot.map((t, j) => j).filter((j) => colTot[j] > 0).sort((x, y) => colTot[y] - colTot[x]).slice(0, 30);
+  const z = rows.map((k) => { const t = M[k].reduce((x, y) => x + y, 0); return cols.map((j) => (100 * M[k][j]) / t); });
+  P("xt-plot", [{ type: "heatmap", z, x: cols.map((j) => pretty(fb.categories[j])), y: rows.map((k) => pretty(fa.categories[k])),
+    colorscale: SEQ.map((c, i) => [i / (SEQ.length - 1), c]), zmin: 0, zmax: 100,
+    hovertemplate: "%{y} → %{x}: %{z:.1f}%<extra></extra>", colorbar: { title: { text: "% of row" }, thickness: 10 } }],
+  { xaxis: { tickangle: -45, automargin: true }, yaxis: { autorange: "reversed", automargin: true }, margin: { l: 150, r: 20, t: 10, b: 160 } });
+}
+
+// ── Results tab ───────────────────────────────────────────────────────────
+let resultsReady = null;
+function initResults() { return (resultsReady ||= buildResults()); }
+
+async function buildResults() {
+  const R = await results();
+  const groups = [...new Set(R.meta.map((r) => r.group))].sort();
+  $("#r-group").innerHTML = groups.map((g) => `<option>${esc(g)}</option>`).join("");
+  $("#r-group").value = groups.includes("MDS vs healthy") ? "MDS vs healthy" : groups[0];
+  const updCt = () => {
+    const cts = [...new Set(R.meta.filter((r) => r.group === $("#r-group").value).map((r) => r.celltype))].sort();
+    $("#r-ct").innerHTML = cts.map((c) => `<option value="${c}">${ctName(c)}</option>`).join("");
+    if (cts.includes("HSPC")) $("#r-ct").value = "HSPC";
+    drawResults();
+  };
+  $("#r-group").onchange = updCt; $("#r-ct").onchange = drawResults; $("#r-sig").onchange = drawResults; $("#r-cyto").onchange = drawForest;
+  updCt();
+  const mcts = [...new Set(R.module_meta.map((r) => r.celltype))].sort();
+  $("#m-ct").innerHTML = mcts.map((c) => `<option value="${c}">${ctName(c)}</option>`).join("");
+  $("#m-ct").value = mcts.includes("HSPC") ? "HSPC" : mcts[0];
+  $("#m-ct").onchange = drawModules; drawModules();
+  const cons = [...new Set(R.propeller.map((r) => r.contrast + " · " + r.compartment))].sort();
+  $("#p-con").innerHTML = cons.map((c) => `<option>${esc(c)}</option>`).join("");
+  $("#p-con").onchange = drawProp; drawProp();
+  table($("#studies"), R.studies); table($("#about-studies"), R.studies);
+  $("#figures").innerHTML = [1, 2, 3, 4, 5, 6].map((k) => `<a href="data/results/figures/fig${k}.png" target="_blank"><img loading="lazy" src="data/results/figures/fig${k}.png" alt="Figure ${k}"><span>Figure ${k}</span></a>`).join("");
+}
+
+function drawResults() {
+  const R = S.results, g = $("#r-group").value, ct = $("#r-ct").value;
+  let rows = R.meta.filter((r) => r.group === g && r.celltype === ct);
+  if ($("#r-sig").checked) rows = rows.filter((r) => r.q < 0.1);
+  rows.sort((a, b) => a.effect - b.effect);
+  P("r-bar", [{ type: "scatter", mode: "markers", y: rows.map((r) => r.cytokine), x: rows.map((r) => r.effect),
+    error_x: { type: "data", symmetric: false, array: rows.map((r) => r.ci_high - r.effect), arrayminus: rows.map((r) => r.effect - r.ci_low), color: css("--muted"), thickness: 1 },
+    marker: { size: 8, color: rows.map((r) => (r.q < 0.1 ? css("--accent") : GREY)) },
+    text: rows.map((r) => `${r.cytokine}: g ${r.effect.toFixed(2)} [${r.ci_low.toFixed(2)}, ${r.ci_high.toFixed(2)}], q ${r.q.toPrecision(2)}; ${r.k} stud${r.k > 1 ? "ies" : "y"}, ${r.n_test} vs ${r.n_ref} donors`), hoverinfo: "text" }],
+  { height: Math.max(300, 18 * rows.length + 80), xaxis: { title: "Hedges' g (95% CI), disease − healthy", zeroline: true }, margin: { l: 110, r: 20, t: 10, b: 50 } });
+  $("#r-cyto").innerHTML = rows.slice().reverse().map((r) => `<option>${esc(r.cytokine)}</option>`).join("");
+  drawForest();
+}
+
+function drawForest() {
+  const R = S.results, g = $("#r-group").value, ct = $("#r-ct").value, cy = $("#r-cyto").value;
+  const st = R.study_effects.filter((r) => r.group === g && r.celltype === ct && r.cytokine === cy);
+  const m = R.meta.find((r) => r.group === g && r.celltype === ct && r.cytokine === cy);
+  const y = st.map((r) => `${r.study} (${r.n_test} vs ${r.n_ref})`), x = st.map((r) => r.effect);
+  const data = [{ type: "scatter", mode: "markers", x, y, marker: { size: 9, color: css("--ink2") },
+    error_x: { type: "data", array: st.map((r) => 1.96 * r.se), color: css("--muted") }, name: "study", hovertemplate: "g %{x:.2f}<extra></extra>" }];
+  if (m) data.push({ type: "scatter", mode: "markers", x: [m.effect], y: [`pooled (q ${m.q.toPrecision(2)})`], marker: { symbol: "diamond", size: 14, color: css("--accent") },
+    error_x: { type: "data", symmetric: false, array: [m.ci_high - m.effect], arrayminus: [m.effect - m.ci_low], color: css("--accent") }, name: "pooled", hovertemplate: "pooled g %{x:.2f}<extra></extra>" });
+  P("r-forest", data, { showlegend: false, xaxis: { title: `${cy} response in ${ctName(ct)}: Hedges' g`, zeroline: true }, margin: { l: 200, r: 20, t: 10, b: 50 } });
+}
+
+function drawModules() {
+  const R = S.results, ct = $("#m-ct").value, rows = R.module_meta.filter((r) => r.celltype === ct);
+  const mods = [...new Set(rows.map((r) => r.module))], groups = [...new Set(rows.map((r) => r.group))].sort();
+  const get = (m, g) => rows.find((r) => r.module === m && r.group === g);
+  const z = mods.map((m) => groups.map((g) => get(m, g)?.effect ?? null));
+  const text = mods.map((m) => groups.map((g) => { const r = get(m, g); return r ? `${r.effect.toFixed(2)}${r.q < 0.1 ? " *" : ""}` : ""; }));
+  P("m-heat", [{ type: "heatmap", z, x: groups, y: mods.map((m) => m.replace("other: ", "")), text, texttemplate: "%{text}",
+    colorscale: DIV.map((c, i) => [i / (DIV.length - 1), c]), zmid: 0, zmin: -3, zmax: 3,
+    hovertemplate: "%{y} · %{x}: g %{z:.2f}<extra></extra>", colorbar: { title: { text: "g" }, thickness: 10 } }],
+  { height: Math.max(320, 34 * mods.length + 160), xaxis: { tickangle: -40, automargin: true }, yaxis: { automargin: true },
+    annotations: [{ text: "* q < 0.1", showarrow: false, xref: "paper", yref: "paper", x: 1, y: 1.04, font: { size: 11, color: css("--muted") } }] });
+}
+
+function drawProp() {
+  const R = S.results, [con, comp] = $("#p-con").value.split(" · ");
+  const rows = R.propeller.filter((r) => r.contrast === con && r.compartment === comp).sort((a, b) => a.log2_ratio - b.log2_ratio);
+  P("p-bar", [{ type: "bar", orientation: "h", y: rows.map((r) => pretty(r.celltype)), x: rows.map((r) => r.log2_ratio),
+    marker: { color: rows.map((r) => (r.q < 0.1 ? css("--accent") : GREY)) },
+    text: rows.map((r) => `${(100 * r.prop_test).toFixed(1)}% vs ${(100 * r.prop_ref).toFixed(1)}%, q ${r.q.toPrecision(2)}`), hoverinfo: "text+y" }],
+  { height: Math.max(280, 22 * rows.length + 80), xaxis: { title: "log2 ratio of mean share (disease / reference); blue = q < 0.1" }, margin: { l: 130, r: 20, t: 10, b: 50 } });
+}
+
+function table(el, rows) {
+  if (!rows.length) return;
+  const cols = Object.keys(rows[0]);
+  el.innerHTML = `<table><thead><tr>${cols.map((c) => `<th>${esc(pretty(c))}</th>`).join("")}</tr></thead><tbody>` +
+    rows.map((r) => `<tr>${cols.map((c) => `<td>${esc(r[c] ?? "")}</td>`).join("")}</tr>`).join("") + "</tbody></table>";
+}
+
+// ── navigation, hash, theme ───────────────────────────────────────────────
+function writeHash() {
+  const p = new URLSearchParams({ atlas: S.atlas, tab: $(".tabs .active")?.dataset.tab || "explore", c: `${S.colour.type}:${S.colour.key}`, emb: S.emb });
+  history.replaceState(null, "", "#" + p.toString());
+}
+function readHash() { return new URLSearchParams(location.hash.slice(1)); }
+
+function showTab(t) {
+  $$(".tabs button[data-tab]").forEach((b) => b.classList.toggle("active", b.dataset.tab === t));
+  $$(".tab").forEach((s) => s.classList.toggle("active", s.id === "tab-" + t));
+  if (t === "results" || t === "about") initResults().catch(console.error);
+  if (t === "explore" && plot) plot.set({ width: "auto", height: "auto" });
+  if (S.atlas) writeHash();
+}
+
+async function switchAtlas(a, colour) {
+  $$(".atlas-switch button").forEach((b) => b.setAttribute("aria-checked", b.dataset.atlas === a));
+  await loadAtlas(a);
+  buildControls();
+  const [t, ...k] = (colour || "field:level2").split(":");
+  const key = k.join(":");
+  const ok = t === "field" ? S.field[key] : t === "gene" ? S.meta.genes.some((g) => g[0] === key) :
+    (t === "cytokine" ? S.meta.cytokine_scores : S.meta.module_scores).some((r) => r.name === key);
+  S.colour = ok ? { type: t, key } : { type: "field", key: "level2" };
+  $("#colour").value = S.colour.type === "field" ? S.colour.key : "";
+  if (S.colour.type === "gene") $("#gene").value = key;
+  if (S.colour.type === "cytokine") $("#cytokine").value = key;
+  if (S.colour.type === "module") $("#module").value = key;
+  $("#about-build").textContent = `${S.atlas}: ${S.n.toLocaleString()} cells shown of ${S.meta.n_cells_total.toLocaleString()} (subsample seed ${S.meta.seed}).`;
+  selectionSummary(null);
+  $("#dot-genes").value = a === "PBMC4" ? "CD14, FCGR3A, CD3E, CD8A, NKG7, MS4A1, IL1B, IFNG" : "CD34, PROM1, MPO, GATA1, CD14, CD3E, IL1B, IL1RAP, IL3RA, MPL";
+  $("#dist-name").value = $("#dist-kind").value === "gene" ? "IL1B" : $("#dist-name").value;
+  await draw();
+  plot.reset();
+}
+
+function applyTheme() { if (plot) plot.set({ backgroundColor: css("--plot-bg"), pointColorHover: css("--ink") }); }
+
+async function main() {
+  const h = readHash();
+  const saved = (() => { try { return localStorage.getItem("theme"); } catch { return null; } })();
+  if (saved) document.documentElement.dataset.theme = saved;
+  try { if (localStorage.getItem("introHidden")) $("#intro").hidden = true; } catch { /* storage unavailable */ }
+  const canvas = $("#canvas");
+  plot = createScatterplot({ canvas, width: "auto", height: "auto", pointSize: 2.5, backgroundColor: css("--plot-bg"),
+    lassoColor: css("--accent"), pointColorHover: css("--ink"), performanceMode: false, opacityInactiveScale: 1,
+    lassoOnLongPress: true });
+  plot.subscribe("pointOver", (i) => tooltip(i));
+  plot.subscribe("pointOut", () => tooltip(null));
+  plot.subscribe("select", ({ points }) => selectionSummary(points));
+  plot.subscribe("deselect", () => selectionSummary(null));
+  canvas.addEventListener("mousemove", (e) => { mouse = { x: e.clientX, y: e.clientY }; });
+  new ResizeObserver(() => plot.set({ width: "auto", height: "auto" })).observe($(".plot-wrap"));
+
+  $$(".atlas-switch button").forEach((b) => (b.onclick = () => switchAtlas(b.dataset.atlas, `${S.colour.type}:${S.colour.key}`)));
+  $$(".tabs button[data-tab]").forEach((b) => (b.onclick = () => showTab(b.dataset.tab)));
+  $("#theme").onclick = () => {
+    const cur = document.documentElement.dataset.theme || (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light");
+    const next = cur === "dark" ? "light" : "dark";
+    document.documentElement.dataset.theme = next;
+    try { localStorage.setItem("theme", next); } catch { /* ignore */ }
+    applyTheme(); draw();
+  };
+  $("#intro-close").onclick = () => { $("#intro").hidden = true; try { localStorage.setItem("introHidden", "1"); } catch { /* ignore */ } };
+  $("#colour").onchange = (e) => e.target.value && setColour("field", e.target.value);
+  $("#gene").onchange = (e) => { const g = e.target.value.trim().toUpperCase(); const hit = S.meta.genes.find((r) => r[0].toUpperCase() === g); if (hit) { e.target.value = hit[0]; setColour("gene", hit[0]); } else $("#gene-note").textContent = `"${e.target.value}" is not in the gene panel.`; };
+  $("#cytokine").onchange = (e) => e.target.value && setColour("cytokine", e.target.value);
+  $("#module").onchange = (e) => e.target.value && setColour("module", e.target.value);
+  $("#emb").onchange = async (e) => { S.emb = e.target.value; await draw(); plot.reset(); };
+  $("#psize").oninput = () => plot.set({ pointSize: +$("#psize").value });
+  $("#filter-reset").onclick = () => { S.filters = {}; $$("#filters .chip").forEach((c) => c.classList.remove("on")); updateFilterCount(); draw(); };
+  $("#reset-view").onclick = () => plot.reset();
+  $("#sel-clear").onclick = () => { plot.deselect(); selectionSummary(null); };
+  $("#dot-go").onclick = () => dotPlot().catch(console.error);
+  $("#dot-preset").onchange = (e) => {
+    const v = e.target.value, mk = S.meta.markers; if (!v) return;
+    const genes = v === "l1" ? Object.values(mk.level1).map((g) => g.slice(0, 2)).flat() : Object.values(mk.level2[v.slice(3)]).map((g) => g.slice(0, 3)).flat();
+    $("#dot-genes").value = [...new Set(genes)].join(", ");
+    if (v !== "l1") $("#dot-group").value = "level2";
+  };
+  $("#dist-kind").onchange = (e) => {
+    const k = e.target.value;
+    $("#dist-name").setAttribute("list", k === "gene" ? "gene-list" : k + "-list");
+    let dl = $(`#${k}-list`);
+    if (k !== "gene" && !dl) { dl = document.createElement("datalist"); dl.id = k + "-list"; document.body.appendChild(dl); }
+    if (k !== "gene") dl.innerHTML = (k === "cytokine" ? S.meta.cytokine_scores : S.meta.module_scores).map((r) => `<option value="${esc(r.name)}">`).join("");
+    $("#dist-name").value = k === "gene" ? "IL1B" : (k === "cytokine" ? "IL-1-beta" : "Interferon response");
+  };
+  $("#dist-go").onclick = () => distPlot().catch(console.error);
+  $("#xt-go").onclick = crossTab;
+  await switchAtlas(h.get("atlas") === "PBMC4" ? "PBMC4" : "BM25", h.get("c") || undefined);
+  if (h.get("emb") && S.meta.l2umap[h.get("emb")]) { S.emb = h.get("emb"); $("#emb").value = S.emb; await draw(); plot.reset(); }
+  showTab(h.get("tab") || "explore");
+}
+
+main().catch((e) => { $("#loading").hidden = false; $("#loading").textContent = "Could not load the atlas: " + e.message; console.error(e); });
