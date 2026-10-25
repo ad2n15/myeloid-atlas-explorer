@@ -71,6 +71,7 @@ main { flex: 1; min-height: 0; }
 .controls label.inline { flex-direction: row; align-items: center; gap: 6px; }
 .split-only { display: none; }
 #tab-explore.split .split-only { display: inline; }
+#selection { margin-bottom: 8px; }
 .legend-head { margin: 10px 0 2px; font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
 .error { color: #b3261e; }
 .run-note { margin: 4px 0; }
@@ -121,6 +122,8 @@ th { color: var(--ink2); font-weight: 600; }
   #tab-explore.split .plot-wrap { height: 50vh; }
   #mapB { border-left: 0; border-top: 2px solid var(--line); }
   .mapbar { grid-template-columns: 1fr 1fr; }
+  #mapB .map-chip { top: 80px; }
+  .legend-panel #selection { border-bottom: 1px solid var(--line); padding-bottom: 6px; }
   .controls { order: 2; border-right: 0; border-top: 1px solid var(--line); }
   .legend-panel { order: 3; border-left: 0; border-top: 1px solid var(--line); max-height: 50vh; }
   .chart { height: 360px; } .chart.tall { height: 520px; }

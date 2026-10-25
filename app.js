@@ -15,6 +15,11 @@ const CT_NAME = {
   Plasmablast: "Plasmablast",
 };
 const ctName = (c) => CT_NAME[c] || c;
+const GROUP_NAME = { MDS_MPN: "MDS/MPN", mrd: "MRD", on_treatment: "on treatment", post_treatment: "after treatment",
+  post_transplant: "after transplant", CH_covid_severe: "CH with severe COVID-19", covid: "COVID-19", MF: "myelofibrosis (MF)",
+  ET: "essential thrombocythaemia (ET)", CH: "clonal haematopoiesis (CH)", sAML: "secondary AML", CMML: "CMML" };
+const groupName = (g) => String(g).split(" ").map((w) => GROUP_NAME[w] || w.replace(/_/g, " ")).join(" ");
+const contrastName = (c) => { const [st, rest] = c.split("__"); return `${st.replace(/_/g, " ")}: ${groupName((rest || "").replace(/_vs_/, " vs "))}`; };
 const FILTER_FIELDS = ["gse", "condition", "level1", "sex", "timepoint"];
 const GROUP_FIELDS = ["level2", "level1", "condition", "gse", "sex", "timepoint", "genotype", "mutation_group"];
 
@@ -153,10 +158,19 @@ function makeView(id) {
       : { colour: $("#colourB"), gene: $("#geneB"), cytokine: $("#cytokineB"), module: $("#moduleB") },
     colour: { type: "field", key: "level2" }, isolate: null, order: null, on: id === "mapA", mouse: { x: 0, y: 0 } };
   v.plot = createScatterplot({ canvas: v.canvas, width: "auto", height: "auto", pointSize: 2.5, backgroundColor: css("--plot-bg"),
-    lassoColor: css("--accent"), pointColorHover: css("--ink"), opacityInactiveScale: 1, lassoOnLongPress: true });
+    lassoColor: css("--accent"), pointColorHover: css("--ink"), opacityInactiveScale: 0.15, lassoOnLongPress: true });
   v.plot.subscribe("pointOver", (i) => tooltip(v, i));
   v.plot.subscribe("pointOut", () => tooltip(v, null));
-  v.plot.subscribe("select", ({ points }) => selectionFrom(v, points));
+  // a Shift+click fires on mouse-up after a lasso and would replace it with one point: keep the lasso
+  v.plot.subscribe("lassoEnd", () => { v.lassoAt = performance.now(); });
+  v.plot.subscribe("select", ({ points }) => {
+    if (points.length === 1 && v.lastMany && performance.now() - v.lassoAt < 600) {
+      v.plot.select(v.lastMany, { preventEvent: true });
+      return;
+    }
+    if (points.length > 1) v.lastMany = Array.from(points);
+    selectionFrom(v, points);
+  });
   v.plot.subscribe("deselect", () => selectionFrom(v, null));
   v.plot.subscribe("view", ({ view }) => syncCamera(v, view));
   v.canvas.addEventListener("mousemove", (e) => { v.mouse = { x: e.clientX, y: e.clientY }; });
@@ -164,6 +178,7 @@ function makeView(id) {
   return v;
 }
 const other = (v) => V.find((w) => w !== v && w.on);
+const fit = (v) => v.plot.zoomToArea({ x: -1, y: -1, width: 2, height: 2 });
 // copy one view's camera to the other; equal matrices are skipped, so the echo event ends the exchange
 const sameView = (a, b) => a && b && a.length === b.length && a.every((x, i) => Math.abs(x - b[i]) < 1e-6);
 function setCamera(w, view) {
@@ -183,8 +198,9 @@ async function currentValues(view) {
     for (let i = 0; i < S.n; i++) v[i] = q[i] === 0 ? NaN : f.range[0] + ((q[i] - 1) / 65534) * (f.range[1] - f.range[0]);
     return { kind: "num", v, label: f.label, seq: true };
   }
-  if (c.type === "gene") return { kind: "num", v: await gene(c.key), label: `${c.key} (log-normalised)`, seq: true, gene: true };
-  return { kind: "num", v: await score(c.type, c.key), label: `${c.key} response (z within cell type)`, seq: false };
+  if (c.type === "gene") return { kind: "num", v: await gene(c.key), label: `${c.key} expression`, seq: true, gene: true };
+  const name = /response$/.test(c.key) ? c.key : `${c.key} response`;
+  return { kind: "num", v: await score(c.type, c.key), label: `${name.replace("other: ", "")} (vs same cell type)`, seq: false };
 }
 
 const drawAll = () => Promise.all(V.filter((v) => v.on).map(draw));
@@ -229,7 +245,7 @@ async function drawNow(view) {
     for (let j = 0; j < m; j++) {
       const i = cell(j), v = val.v[i];
       active[j] = mask[i] && Number.isFinite(v) ? 1 : 0;
-      z[j] = Number.isFinite(v) ? Math.min(1, Math.max(0, (v - lo) / (hi - lo))) : 0;
+      z[j] = Number.isFinite(v) ? Math.min(1, Math.max(0, (v - lo) / (hi - lo))) : (val.seq ? 0 : 0.5);   // unscored: neutral grey
     }
   }
   // draw order: inactive first; categorical shuffled, continuous ascending (high values on top)
@@ -253,6 +269,7 @@ async function drawNow(view) {
 function caption(view, mask) {
   const shown = mask.reduce((a, b) => a + b, 0);
   const emb = S.emb === "global" ? "whole-atlas UMAP" : `${S.emb} lineage UMAP (Level 2 re-embedding)`;
+  if (!shown) { view.captionEl.textContent = "No cells match the current filters — clear some filter chips."; return; }
   view.captionEl.textContent = view.id === "mapB" ? "" : `${S.atlas}: ${shown.toLocaleString()} of ${S.n.toLocaleString()} subsampled cells shown ` +
     `(atlas total ${S.meta.n_cells_total.toLocaleString()}) · ${emb}`;
 }
@@ -291,9 +308,9 @@ function legend(view, val, mask, lo, hi, idx) {
     const grad = (val.seq ? SEQ : DIV).join(",");
     el.innerHTML = `<div class="gradient" style="background:linear-gradient(90deg,${grad})"></div>
       <div class="grad-labels"><span>${fmt(lo)}</span><span>${val.seq ? "" : "0"}</span><span>${fmt(hi)}</span></div>
-      <p class="muted" style="font-size:12px">${val.gene ? "Grey-white: no detected expression. Colour scale capped at the 99th percentile." :
+      <p class="muted" style="font-size:12px">${val.gene ? "Expression level on a log scale (0 = not detected; palest = no expression). Colour scale capped at the 99th percentile." :
         val.seq ? "Scale from 1st to 99th percentile." :
-        "Blue: lower, red: higher response than other cells of the same type. Faded cells: no signature for this cytokine in their cell type."}</p>`;
+        "Red = stronger, blue = weaker response than other cells of the same type. Grey, faded cells: their cell type has no signature for this cytokine."}</p>`;
     if (view.colour.type !== "field" && view.colour.type !== "gene") {
       const list = (view.colour.type === "cytokine" ? S.meta.cytokine_scores : S.meta.module_scores).find((r) => r.name === view.colour.key);
       el.insertAdjacentHTML("beforeend", `<p style="font-size:12px"><b>Scored cell types:</b> ${list.celltypes.map(ctName).join(", ")}</p>`);
@@ -365,16 +382,20 @@ function buildControls() {
     `<option value="${esc(r.name)}">${esc(r.name)} (${r.celltypes.length} cell type${r.celltypes.length > 1 ? "s" : ""})</option>`).join("");
   const modOpts = `<option value="">— choose —</option>` + S.meta.module_scores.map((r) =>
     `<option value="${esc(r.name)}">${esc(r.name.replace("other: ", ""))}</option>`).join("");
-  for (const v of V) { v.ctl.colour.innerHTML = colourOpts; v.ctl.cytokine.innerHTML = cytoOpts; v.ctl.module.innerHTML = modOpts; }
+  for (const v of V) {
+    const ph = (html, text) => (v.id === "mapB" ? html.replace("— choose —", text) : html);
+    v.ctl.colour.innerHTML = ph(colourOpts, "Colour by…"); v.ctl.cytokine.innerHTML = ph(cytoOpts, "Cytokine response…");
+    v.ctl.module.innerHTML = ph(modOpts, "Response module…");
+  }
   $("#emb").innerHTML = `<option value="global">Whole atlas (UMAP)</option>` +
-    Object.keys(S.meta.l2umap).map((l) => `<option value="${l}">${pretty(l)} lineage (Level 2 map)</option>`).join("");
+    Object.keys(S.meta.l2umap).map((l) => `<option value="${l}">${pretty(l).replace(/ lineage$/, "")} lineage (Level 2 map)</option>`).join("");
   $("#gene-list").innerHTML = S.meta.genes.map((g) => `<option value="${g[0]}">`).join("");
   $("#gene-note").textContent = `${S.meta.genes.length.toLocaleString()} genes available (markers, cytokine signatures, ligands/receptors, variable genes)`;
   // filters
   $("#filters").innerHTML = FILTER_FIELDS.filter((f) => S.field[f]).map((fid) => {
     const f = S.field[fid];
     return `<div class="fgroup"><b>${esc(f.label)}</b><div class="chips" data-fid="${fid}">` +
-      f.categories.map((c, k) => `<span class="chip" data-k="${k}" title="${f.counts[k]} cells">${esc(pretty(c))}</span>`).join("") + "</div></div>";
+      f.categories.map((c, k) => `<span class="chip" data-k="${k}" title="${f.counts[k]} cells">${esc(groupName(c))}</span>`).join("") + "</div></div>";
   }).join("");
   $$("#filters .chips").forEach((box) => box.addEventListener("click", (e) => {
     const chip = e.target.closest(".chip"); if (!chip) return;
@@ -391,7 +412,8 @@ function buildControls() {
   $("#dist-group").innerHTML = opt(GROUP_FIELDS.filter((f) => S.field[f]));
   $("#dist-group").value = "condition";
   $("#dist-ct").innerHTML = `<option value="">all cell types</option>` + S.field.level2.categories.map((c, k) => `<option value="${k}">${esc(pretty(c))}</option>`).join("");
-  $("#xt-field").innerHTML = opt(S.meta.fields.filter((f) => f.kind === "cat" && (f.id.startsWith("ct_") || f.group === "Author labels" || f.id === "level1")).map((f) => f.id));
+  $("#xt-field").innerHTML = opt(S.meta.fields.filter((f) => f.kind === "cat" && (f.id.startsWith("ct_") || f.group === "Author labels")).map((f) => f.id).concat(["level1"]));
+  $("#xt-field").value = S.atlas === "PBMC4" ? "ct_blood_mv" : "ct_bm_mv";
   const mk = S.meta.markers;
   $("#dot-preset").innerHTML = `<option value="">—</option><option value="l1">Level 1 lineage markers</option>` +
     Object.keys(mk.level2).map((l) => `<option value="l2:${l}">${pretty(l)} sub-state markers</option>`).join("");
@@ -430,8 +452,10 @@ function bindViewControls(view) {
   c.colour.onchange = (e) => e.target.value && setColour(view, "field", e.target.value);
   c.gene.onchange = (e) => {
     const g = e.target.value.trim().toUpperCase(), hit = S.meta.genes.find((r) => r[0].toUpperCase() === g);
-    if (hit) setColour(view, "gene", hit[0]);
-    else { e.target.value = ""; $("#gene-note").textContent = `"${g}" is not in the gene panel.`; }
+    const note = $("#gene-note"), base = `${S.meta.genes.length.toLocaleString()} genes available (markers, cytokine signatures, ligands/receptors, variable genes)`;
+    if (hit) { note.textContent = base; setColour(view, "gene", hit[0]); }
+    else if (!g) note.textContent = base;
+    else { e.target.value = ""; note.textContent = `"${g}" is not in the gene panel. ${base}.`; }
   };
   c.cytokine.onchange = (e) => e.target.value && setColour(view, "cytokine", e.target.value);
   c.module.onchange = (e) => e.target.value && setColour(view, "module", e.target.value);
@@ -448,10 +472,10 @@ async function setSplit(on) {
   $("#split").textContent = on ? "Single map" : "Split view: compare two colourings";
   $("#link-zoom-wrap").hidden = !on;
   for (const v of V) v.plot.set({ width: "auto", height: "auto" });
-  if (on) {
-    await draw(B);
-    if ($("#link-zoom").checked) setCamera(B, V[0].plot.get("cameraView"));
-  } else writeHash();
+  await new Promise((r) => requestAnimationFrame(r));
+  if (on) await draw(B);
+  for (const v of V.filter((w) => w.on)) fit(v);
+  writeHash();
 }
 
 // ── Compare tab ───────────────────────────────────────────────────────────
@@ -468,7 +492,10 @@ function P(el, data, layout) {
   const div = document.getElementById(el), cls = div.classList;
   const height = layout.height || (cls.contains("tall") ? 640 : cls.contains("short") ? 300 : 420);
   div.style.height = height + "px";              // the box grows with the chart, so it never covers the next card
-  return window.Plotly.react(el, data, Object.assign(layoutBase(), layout, { height }), { displaylogo: false, responsive: true });
+  const narrow = window.innerWidth < 900;
+  const lay = Object.assign(layoutBase(), layout, { height });
+  if (narrow) { lay.font = { ...lay.font, size: 9 }; lay.margin = { ...lay.margin, l: Math.min(lay.margin?.l ?? 150, 110) }; }
+  return window.Plotly.react(el, data, lay, { displaylogo: false, responsive: true, displayModeBar: !narrow });
 }
 
 function groupCells(fid, minCells = 20) {
@@ -477,7 +504,7 @@ function groupCells(fid, minCells = 20) {
   let keys = [...cells.keys()].filter((k) => cells.get(k).length >= minCells && f.categories[k] !== "NA");
   if (fid === "level2") { const par = S.meta.level2_parent; keys.sort((a, b) => (par[f.categories[a]] || "").localeCompare(par[f.categories[b]] || "") || f.categories[a].localeCompare(f.categories[b])); }
   else keys.sort((a, b) => cells.get(b).length - cells.get(a).length);
-  return keys.slice(0, 50).map((k) => ({ k, name: pretty(f.categories[k]), cells: cells.get(k) }));
+  return keys.slice(0, 50).map((k) => ({ k, name: groupName(f.categories[k]), cells: cells.get(k) }));
 }
 
 async function dotPlot() {
@@ -502,7 +529,7 @@ async function dotPlot() {
   }
   P("dot-plot", [{ type: "scatter", mode: "markers", x: xs, y: ys, text, hoverinfo: "text",
     marker: { size, color: col, cmin: 0, cmax: 1, colorscale: SEQ.slice(1).map((c, i) => [i / (SEQ.length - 2), c]), line: { width: 0.5, color: css("--muted") },
-      colorbar: { title: { text: "mean, scaled<br>within gene", side: "right" }, thickness: 10, tickvals: [0, 1], ticktext: ["low", "high"] } } }],
+      colorbar: { title: { text: "mean (scaled<br>within gene)", side: "top" }, thickness: 10, len: 0.4, y: 1, yanchor: "top", tickvals: [0, 1], ticktext: ["low", "high"] } } }],
   { height: Math.max(360, 24 * groups.length + 140), xaxis: { tickangle: -45, side: "top" }, yaxis: { autorange: "reversed", automargin: true },
     margin: { l: 150, r: 20, t: 80, b: 20 } });
   if (missing.length) $("#dot-plot").insertAdjacentHTML("afterbegin", `<p class="muted">Not in the gene panel: ${esc(missing.join(", "))}</p>`);
@@ -549,7 +576,8 @@ function crossTab() {
   P("xt-plot", [{ type: "heatmap", z, x: cols.map((j) => pretty(fb.categories[j])), y: rows.map((k) => pretty(fa.categories[k])),
     colorscale: SEQ.map((c, i) => [i / (SEQ.length - 1), c]), zmin: 0, zmax: 100,
     hovertemplate: "%{y} → %{x}: %{z:.1f}%<extra></extra>", colorbar: { title: { text: "% of row" }, thickness: 10 } }],
-  { xaxis: { tickangle: -45, automargin: true }, yaxis: { autorange: "reversed", automargin: true }, margin: { l: 150, r: 20, t: 10, b: 160 } });
+  { height: Math.max(420, 17 * rows.length + 200), xaxis: { tickangle: -45, automargin: true, tickfont: { size: 10 } },
+    yaxis: { autorange: "reversed", automargin: true, dtick: 1, tickfont: { size: 10 } }, margin: { l: 150, r: 20, t: 10, b: 160 } });
 }
 
 // ── Results tab ───────────────────────────────────────────────────────────
@@ -559,7 +587,7 @@ function initResults() { return (resultsReady ||= buildResults()); }
 async function buildResults() {
   const R = await results();
   const groups = [...new Set(R.meta.map((r) => r.group))].sort();
-  $("#r-group").innerHTML = groups.map((g) => `<option>${esc(g)}</option>`).join("");
+  $("#r-group").innerHTML = groups.map((g) => `<option value="${esc(g)}">${esc(groupName(g))}</option>`).join("");
   $("#r-group").value = groups.includes("MDS vs healthy") ? "MDS vs healthy" : groups[0];
   const updCt = () => {
     const cts = [...new Set(R.meta.filter((r) => r.group === $("#r-group").value).map((r) => r.celltype))].sort();
@@ -579,10 +607,15 @@ async function buildResults() {
   });
   safe("#p-bar", () => {
     const cons = [...new Set(R.propeller.map((r) => r.contrast + " · " + r.compartment))].sort();
-    $("#p-con").innerHTML = cons.map((c) => `<option>${esc(c)}</option>`).join("");
+    $("#p-con").innerHTML = cons.map((c) => { const [con, comp] = c.split(" · "); return `<option value="${esc(c)}">${esc(contrastName(con))} (${comp === "all" ? "all cells" : "progenitors only"})</option>`; }).join("");
     $("#p-con").onchange = () => safe("#p-bar", drawProp); drawProp();
   });
-  safe("#studies", () => { table($("#studies"), R.studies); table($("#about-studies"), R.studies); });
+  safe("#studies", () => {
+    const keep = ["atlas", "study", "primary_disease_llm", "donors_by_condition", "tissue", "population", "donors", "donors_female", "donors_male", "cells"];
+    const label = { primary_disease_llm: "disease", donors_by_condition: "donors by condition", donors_female: "female", donors_male: "male", population: "cells profiled" };
+    const rows = R.studies.map((r) => Object.fromEntries(keep.map((k) => [label[k] || k, k === "donors_by_condition" ? groupName(String(r[k] ?? "")) : r[k]])));
+    table($("#studies"), rows); table($("#about-studies"), rows);
+  });
   $("#figures").innerHTML = [1, 2, 3, 4, 5, 6].map((k) => `<a href="data/results/figures/fig${k}.png" target="_blank"><img loading="lazy" src="data/results/figures/fig${k}.png" alt="Figure ${k}"><span>Figure ${k}</span></a>`).join("");
 }
 
@@ -595,7 +628,7 @@ function drawResults() {
     error_x: { type: "data", symmetric: false, array: rows.map((r) => r.ci_high - r.effect), arrayminus: rows.map((r) => r.effect - r.ci_low), color: css("--muted"), thickness: 1 },
     marker: { size: 8, color: rows.map((r) => (r.q < 0.1 ? css("--accent") : GREY)) },
     text: rows.map((r) => `${r.cytokine}: g ${r.effect.toFixed(2)} [${r.ci_low.toFixed(2)}, ${r.ci_high.toFixed(2)}], q ${fq(r.q)}; ${r.k} stud${r.k > 1 ? "ies" : "y"}, ${r.n_test} vs ${r.n_ref} donors`), hoverinfo: "text" }],
-  { height: Math.max(300, 18 * rows.length + 80), xaxis: { title: "Hedges' g (95% CI), disease − healthy", zeroline: true }, margin: { l: 110, r: 20, t: 10, b: 50 } });
+  { height: Math.max(300, 18 * rows.length + 80), xaxis: { title: "effect size, Hedges' g (95% CI): >0 = higher in disease", zeroline: true, automargin: true }, margin: { l: 110, r: 20, t: 10, b: 50 } });
   $("#r-cyto").innerHTML = rows.slice().reverse().map((r) => `<option>${esc(r.cytokine)}</option>`).join("");
   drawForest();
 }
@@ -609,7 +642,7 @@ function drawForest() {
     error_x: { type: "data", array: st.map((r) => 1.96 * r.se), color: css("--muted") }, name: "study", hovertemplate: "g %{x:.2f}<extra></extra>" }];
   if (m) data.push({ type: "scatter", mode: "markers", x: [m.effect], y: [`pooled (q ${fq(m.q)})`], marker: { symbol: "diamond", size: 14, color: css("--accent") },
     error_x: { type: "data", symmetric: false, array: [m.ci_high - m.effect], arrayminus: [m.effect - m.ci_low], color: css("--accent") }, name: "pooled", hovertemplate: "pooled g %{x:.2f}<extra></extra>" });
-  P("r-forest", data, { showlegend: false, xaxis: { title: `${cy} response in ${ctName(ct)}: Hedges' g`, zeroline: true }, margin: { l: 200, r: 20, t: 10, b: 50 } });
+  P("r-forest", data, { showlegend: false, xaxis: { title: `${cy} in ${ctName(ct)}: effect size (g)`, zeroline: true, automargin: true }, margin: { l: 200, r: 20, t: 10, b: 50 } });
 }
 
 function drawModules() {
@@ -618,7 +651,7 @@ function drawModules() {
   const get = (m, g) => rows.find((r) => r.module === m && r.group === g);
   const z = mods.map((m) => groups.map((g) => get(m, g)?.effect ?? null));
   const text = mods.map((m) => groups.map((g) => { const r = get(m, g); return r ? `${r.effect.toFixed(2)}${r.q < 0.1 ? " *" : ""}` : ""; }));
-  P("m-heat", [{ type: "heatmap", z, x: groups, y: mods.map((m) => m.replace("other: ", "")), text, texttemplate: "%{text}",
+  P("m-heat", [{ type: "heatmap", z, x: groups.map(groupName), y: mods.map((m) => m.replace("other: ", "")), text, texttemplate: "%{text}",
     colorscale: DIV.map((c, i) => [i / (DIV.length - 1), c]), zmid: 0, zmin: -3, zmax: 3,
     hovertemplate: "%{y} · %{x}: g %{z:.2f}<extra></extra>", colorbar: { title: { text: "g" }, thickness: 10 } }],
   { height: Math.max(320, 34 * mods.length + 160), xaxis: { tickangle: -40, automargin: true }, yaxis: { automargin: true },
@@ -630,8 +663,8 @@ function drawProp() {
   const rows = R.propeller.filter((r) => r.contrast === con && r.compartment === comp).sort((a, b) => a.log2_ratio - b.log2_ratio);
   P("p-bar", [{ type: "bar", orientation: "h", y: rows.map((r) => pretty(r.celltype)), x: rows.map((r) => r.log2_ratio),
     marker: { color: rows.map((r) => (r.q < 0.1 ? css("--accent") : GREY)) },
-    text: rows.map((r) => `${(100 * r.prop_test).toFixed(1)}% vs ${(100 * r.prop_ref).toFixed(1)}%, q ${fq(r.q)}`), hoverinfo: "text+y" }],
-  { height: Math.max(280, 22 * rows.length + 80), xaxis: { title: "log2 ratio of mean share (disease / reference); blue = q < 0.1" }, margin: { l: 130, r: 20, t: 10, b: 50 } });
+    hovertext: rows.map((r) => `${pretty(r.celltype)}: ${(100 * r.prop_test).toFixed(1)}% of cells in disease vs ${(100 * r.prop_ref).toFixed(1)}% in reference donors; q ${fq(r.q)}`), hoverinfo: "text" }],
+  { height: Math.max(280, 22 * rows.length + 80), xaxis: { title: "change in share of cells (log2 ratio, disease / reference); blue = q < 0.1 (propeller)" }, margin: { l: 130, r: 20, t: 10, b: 50 } });
 }
 
 function table(el, rows) {
@@ -672,12 +705,14 @@ async function switchAtlas(a, colourA, colourB) {
   V[0].colour = validColour(colourA, { type: "field", key: "level2" });
   V[1].colour = validColour(colourB, defaultB(a));
   for (const v of V) { v.isolate = null; syncControls(v); }
+  $("#intro-touch").hidden = !matchMedia("(pointer: coarse)").matches;
+  $("#intro-mouse").hidden = matchMedia("(pointer: coarse)").matches;
   $("#about-build").textContent = `${S.atlas}: ${S.n.toLocaleString()} cells shown of ${S.meta.n_cells_total.toLocaleString()} (subsample seed ${S.meta.seed}).`;
   selectionFrom(V[0], null);
   $("#dot-genes").value = a === "PBMC4" ? "CD14, FCGR3A, CD3E, CD8A, NKG7, MS4A1, IL1B, IFNG" : "CD34, PROM1, MPO, GATA1, CD14, CD3E, IL1B, IL1RAP, IL3RA, MPL";
   if ($("#dist-kind").value === "gene") $("#dist-name").value = a === "PBMC4" ? "IFNG" : "IL1B";
   await drawAll();
-  for (const v of V) v.plot.reset();
+  for (const v of V.filter((w) => w.on)) fit(v);
 }
 
 function applyTheme() { for (const v of V) v.plot.set({ backgroundColor: css("--plot-bg"), pointColorHover: css("--ink"), lassoColor: css("--accent") }); }
@@ -702,10 +737,10 @@ async function main() {
   $("#intro-close").onclick = () => { $("#intro").hidden = true; try { localStorage.setItem("introHidden", "1"); } catch { /* ignore */ } };
   $("#split").onclick = () => setSplit(!V[1].on);
   $("#link-zoom").onchange = (e) => { if (e.target.checked && V[1].on) setCamera(V[1], V[0].plot.get("cameraView")); };
-  $("#emb").onchange = async (e) => { S.emb = e.target.value; await drawAll(); for (const v of V) v.plot.reset(); };
+  $("#emb").onchange = async (e) => { S.emb = e.target.value; await drawAll(); for (const v of V.filter((w) => w.on)) fit(v); };
   $("#psize").oninput = () => { for (const v of V) v.plot.set({ pointSize: +$("#psize").value }); };
   $("#filter-reset").onclick = () => { S.filters = {}; $$("#filters .chip").forEach((c) => c.classList.remove("on")); updateFilterCount(); drawAll(); };
-  $("#reset-view").onclick = () => { for (const v of V) v.plot.reset(); };
+  $("#reset-view").onclick = () => { for (const v of V.filter((w) => w.on)) fit(v); };
   $("#sel-clear").onclick = () => { for (const v of V) v.plot.deselect({ preventEvent: true }); selectionFrom(V[0], null); };
   $("#dot-go").onclick = () => run("#dot-plot", dotPlot);
   $("#dot-preset").onchange = (e) => {
@@ -726,7 +761,7 @@ async function main() {
   $("#xt-go").onclick = () => run("#xt-plot", async () => crossTab());
 
   await switchAtlas(h.get("atlas") === "PBMC4" ? "PBMC4" : "BM25", h.get("c"), h.get("c2"));
-  if (h.get("emb") && S.meta.l2umap[h.get("emb")]) { S.emb = h.get("emb"); $("#emb").value = S.emb; await drawAll(); for (const v of V) v.plot.reset(); }
+  if (h.get("emb") && S.meta.l2umap[h.get("emb")]) { S.emb = h.get("emb"); $("#emb").value = S.emb; await drawAll(); for (const v of V.filter((w) => w.on)) fit(v); }
   if (h.get("split") === "1") await setSplit(true);
   showTab(h.get("tab") || "explore");
 }

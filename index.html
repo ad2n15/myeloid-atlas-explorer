@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Myeloid Atlas Explorer</title>
 <meta name="description" content="Interactive explorer of curated bone-marrow (BM25) and blood (PBMC4) single-cell atlases of clonal haematopoiesis and myeloid neoplasms: genes, cytokine responses, cell types and donor-level results.">
-<link rel="stylesheet" href="style.css">
+<link rel="stylesheet" href="style.css?v=1792928304">
 <script src="https://cdn.jsdelivr.net/npm/plotly.js-dist-min@2.35.2/plotly.min.js" defer></script>
 </head>
 <body>
@@ -15,8 +15,8 @@
     <span class="sub">clonal haematopoiesis &amp; myeloid neoplasms · single-cell</span>
   </div>
   <div class="atlas-switch" role="radiogroup" aria-label="Atlas">
-    <button data-atlas="BM25" role="radio" aria-checked="true">Bone marrow <small>BM25</small></button>
-    <button data-atlas="PBMC4" role="radio" aria-checked="false">Blood <small>PBMC4</small></button>
+    <button data-atlas="BM25" role="radio" aria-checked="true" title="BM25: 2.5 million bone-marrow / CD34+ progenitor cells from 25 studies">Bone marrow <small>BM25</small></button>
+    <button data-atlas="PBMC4" role="radio" aria-checked="false" title="PBMC4: 274,000 blood immune cells from 4 studies">Blood <small>PBMC4</small></button>
   </div>
   <nav class="tabs" role="tablist">
     <button data-tab="explore" class="active">Explore</button>
@@ -34,9 +34,11 @@
 <section id="tab-explore" class="tab active">
   <aside class="controls">
     <div class="intro" id="intro">
-      <b>Start here.</b> Each dot is one cell, placed so that similar cells sit close together (UMAP).
-      Choose what to colour by, search a gene, or pick a cytokine response. Scroll to zoom, drag to pan,
-      <kbd>Shift</kbd>+drag to lasso cells.
+      <b>Start here.</b> <b>Bone marrow (BM25)</b>: 2.5 million cells from 25 studies; <b>Blood (PBMC4)</b>: 274,000 cells from 4 studies.
+      Each dot is one cell, on a 2-D map where similar cells sit close together. Colours show the cell type (legend on the right);
+      choose another colouring, search a gene, or pick a cytokine response.
+      <span id="intro-mouse">Scroll to zoom, drag to pan, <kbd>Shift</kbd>+drag to lasso a group of cells.</span>
+      <span id="intro-touch" hidden>Pinch to zoom, drag to pan, press and hold then drag to lasso.</span>
       <button class="link" id="intro-close">Hide</button>
     </div>
     <button id="split" class="split-btn" aria-pressed="false">Split view: compare two colourings</button>
@@ -52,10 +54,10 @@
       <datalist id="gene-list"></datalist>
       <small id="gene-note" class="muted"></small>
     </label>
-    <label>Cytokine response <span class="hint" title="Per-cell score of the huCIRA cytokine-response signature for the cell's own type, standardised within that cell type. Descriptive only: the paper's tests are made on donors, not cells.">?</span>
+    <label><span>Cytokine response <span class="hint" title="How strongly each cell shows the genes that its cell type switches on after this cytokine (huCIRA signatures), relative to other cells of the same type. Descriptive only: the paper's tests are made on donors, not cells.">?</span></span>
       <select id="cytokine"><option value="">— choose —</option></select>
     </label>
-    <label>Response module <span class="hint" title="Groups of cytokine signatures that share genes (e.g. Interferon response, IL-1β response). Score per cell, standardised within cell type.">?</span>
+    <label><span>Response module <span class="hint" title="Groups of cytokine signatures that share genes (e.g. Interferon response, IL-1β response). Score per cell, relative to other cells of the same type.">?</span></span>
       <select id="module"><option value="">— choose —</option></select>
     </label>
     <details class="filters" open>
@@ -89,6 +91,10 @@
   </div>
 
   <aside class="legend-panel">
+    <div id="selection" hidden>
+      <h3>Lasso selection <button class="link" id="sel-clear">clear</button></h3>
+      <div id="sel-summary"></div>
+    </div>
     <p class="legend-head" id="legend-headA" hidden>Left map</p>
     <h3 id="legend-title">Legend</h3>
     <div id="legend"></div>
@@ -96,10 +102,6 @@
       <p class="legend-head">Right map</p>
       <h3 id="legend-titleB"></h3>
       <div id="legendB"></div>
-    </div>
-    <div id="selection" hidden>
-      <h3>Lasso selection <button class="link" id="sel-clear">clear</button></h3>
-      <div id="sel-summary"></div>
     </div>
   </aside>
 </section>
@@ -192,7 +194,7 @@
     <li><b>A subsample of cells.</b> To keep the site fast, each atlas shows a stratified subsample (every curated cell type × study is represented; rare types are kept whole). Counts in the legend refer to the subsample.</li>
     <li><b>Level 1 / Level 2 labels</b> are the curated lineages and sub-states used in the paper, assigned from marker genes per cluster and lineage-specific re-embedding.</li>
     <li><b>CellTypist</b> labels (four reference models) and <b>author labels</b> are shown for comparison.</li>
-    <li><b>Gene expression</b> is log-normalised counts (log1p of counts per 10,000), quantised to 256 levels. Only a panel of genes is included: marker genes, all genes of the cytokine signatures, cytokine ligands and receptors, and highly variable genes.</li>
+    <li><b>Gene expression</b> is shown on a log scale (log1p of counts per 10,000; 0 = not detected), quantised to 256 levels. Only a panel of genes is included: marker genes, all genes of the cytokine signatures, cytokine ligands and receptors, and highly variable genes.</li>
     <li><b>Cytokine responses</b> use the Human Cytokine Dictionary (huCIRA) signatures: genes that a given cell type switches on after a given cytokine. For each cell whose type has signatures, the score is the average expression of the signature genes minus that of matched control genes, standardised within the cell type. Grey cells have no signature for that cytokine.</li>
   </ul>
   <h3>Important caveats</h3>
@@ -209,10 +211,14 @@
   <p class="muted" id="about-build"></p>
   <p>Analysis code: <a href="https://github.com/ad2n15/cytokines-mediated-inflammation">github.com/ad2n15/cytokines-mediated-inflammation</a>.
   Please cite the original studies (accessions above) and the accompanying manuscript when using these data.</p>
+  <h3>How to cite</h3>
+  <p>Dawoud A, Tapper W, Cross N, Rackham O. Stem and progenitor cells of myelodysplastic and overlap neoplasms carry IL-1β and proliferative
+  cytokine-response programmes: a donor-level single-cell meta-analysis. Manuscript in preparation (2026), University of Southampton.
+  Myeloid Atlas Explorer: https://ad2n15.github.io/myeloid-atlas-explorer/ — and the original studies listed above.</p>
   <p class="muted">Licence: code MIT; data and figures CC BY 4.0 (<a href="https://github.com/ad2n15/myeloid-atlas-explorer/blob/main/LICENSE-DATA.md">details</a>).</p>
 </section>
 </main>
 
-<script type="module" src="app.js"></script>
+<script type="module" src="app.js?v=1792928304"></script>
 </body>
 </html>
