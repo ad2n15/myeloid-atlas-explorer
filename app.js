@@ -35,6 +35,7 @@ function ramp(stops, k = 256) {
   });
 }
 const SEQ_RAMP = ramp(SEQ), DIV_RAMP = ramp(DIV);
+const DISTINCT = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#6250d6", "#e87ba4", "#00a5b5", "#8c5a00", "#c0392b", "#3f9c35", "#b5527f", "#5d6d7e"];
 
 // ── data loading ──────────────────────────────────────────────────────────
 const base = (a) => `data/${a.toLowerCase()}/`;
@@ -163,12 +164,14 @@ function makeView(id) {
   return v;
 }
 const other = (v) => V.find((w) => w !== v && w.on);
-let syncing = false;
+// copy one view's camera to the other; equal matrices are skipped, so the echo event ends the exchange
+const sameView = (a, b) => a && b && a.length === b.length && a.every((x, i) => Math.abs(x - b[i]) < 1e-6);
+function setCamera(w, view) {
+  if (!sameView(w.plot.get("cameraView"), view)) w.plot.set({ cameraView: Float32Array.from(view) });
+}
 function syncCamera(v, view) {
   const w = other(v);
-  if (!w || syncing || !$("#link-zoom").checked) return;
-  syncing = true;
-  try { w.plot.lookAt(view, { preventEvent: true }); } finally { syncing = false; }
+  if (w && $("#link-zoom").checked) setCamera(w, view);
 }
 
 async function currentValues(view) {
@@ -186,7 +189,16 @@ async function currentValues(view) {
 
 const drawAll = () => Promise.all(V.filter((v) => v.on).map(draw));
 
-async function draw(view) {
+// draws of one view are serialised: a request during a draw is coalesced into one redraw afterwards
+function draw(view) {
+  view.dirty = true;
+  if (!view.busy) view.busy = (async () => {
+    try { while (view.dirty) { view.dirty = false; await drawNow(view); } } finally { view.busy = null; }
+  })();
+  return view.busy;
+}
+
+async function drawNow(view) {
   let idx, X, Y;
   if (S.emb === "global") { idx = null; X = S.x; Y = S.y; } else { const L = await lineage(S.emb); idx = L.ids; X = L.x; Y = L.y; }
   const m = idx ? idx.length : S.n, cell = (j) => (idx ? idx[j] : j);
@@ -195,6 +207,12 @@ async function draw(view) {
   let colours, lo = 0, hi = 1;
   if (val.kind === "cat") {
     colours = [...val.f.colours, GREY];
+    // in a lineage map, Level 2 sub-states get distinct hues instead of shades of the lineage colour
+    if (idx && val.f.id === "level2") {
+      const present = [...new Set(Array.from(idx, (i) => val.codes[i]))].sort((a, b) => a - b);
+      present.forEach((c, k) => { colours[c] = DISTINCT[k % DISTINCT.length]; });
+      val.f = { ...val.f, colours: colours.slice(0, -1) };
+    }
     for (let j = 0; j < m; j++) {
       const i = cell(j), c = val.codes[i];
       active[j] = mask[i] && (!view.isolate || view.isolate.has(c)) ? 1 : 0;
@@ -225,7 +243,7 @@ async function draw(view) {
   view.plot.set({ colorBy: "valueA", opacityBy: "valueB", opacity: [0.08, 0.85], pointColor: colours, pointSize: +$("#psize").value });
   await view.plot.draw({ x: px, y: py, valueA: pz, valueB: pw },
     { zDataType: val.kind === "cat" ? "categorical" : "continuous", wDataType: "categorical", preventFilterReset: true });
-  legend(view, val, mask, lo, hi);
+  legend(view, val, mask, lo, hi, idx);
   view.chipEl.textContent = val.kind === "cat" ? val.f.label : val.label;
   caption(view, mask);
   if (S.selection) highlight(view, S.selection);
@@ -239,13 +257,14 @@ function caption(view, mask) {
     `(atlas total ${S.meta.n_cells_total.toLocaleString()}) · ${emb}`;
 }
 
-function legend(view, val, mask, lo, hi) {
+function legend(view, val, mask, lo, hi, idx) {
   const el = view.legendEl;
   el.innerHTML = "";
   if (val.kind === "cat") {
     view.titleEl.textContent = val.f.label;
     const counts = new Array(val.f.categories.length).fill(0);
-    for (let i = 0; i < S.n; i++) if (mask[i]) counts[val.codes[i]]++;
+    if (idx) { for (const i of idx) if (mask[i]) counts[val.codes[i]]++; }      // only the cells on this map
+    else for (let i = 0; i < S.n; i++) if (mask[i]) counts[val.codes[i]]++;
     const order = counts.map((c, k) => k).filter((k) => counts[k] > 0).sort((a, b) => counts[b] - counts[a]);
     if (view.isolate) {
       const b = document.createElement("button");
@@ -431,7 +450,7 @@ async function setSplit(on) {
   for (const v of V) v.plot.set({ width: "auto", height: "auto" });
   if (on) {
     await draw(B);
-    if ($("#link-zoom").checked) B.plot.lookAt(V[0].plot.get("cameraView"), { preventEvent: true });
+    if ($("#link-zoom").checked) setCamera(B, V[0].plot.get("cameraView"));
   } else writeHash();
 }
 
@@ -446,7 +465,10 @@ function P(el, data, layout) {
     document.getElementById(el).innerHTML = `<p class="error">The chart library (Plotly) did not load. Check your connection or ad-blocker and reload the page.</p>`;
     return;
   }
-  return window.Plotly.react(el, data, Object.assign(layoutBase(), layout), { displaylogo: false, responsive: true });
+  const div = document.getElementById(el), cls = div.classList;
+  const height = layout.height || (cls.contains("tall") ? 640 : cls.contains("short") ? 300 : 420);
+  div.style.height = height + "px";              // the box grows with the chart, so it never covers the next card
+  return window.Plotly.react(el, data, Object.assign(layoutBase(), layout, { height }), { displaylogo: false, responsive: true });
 }
 
 function groupCells(fid, minCells = 20) {
@@ -466,18 +488,23 @@ async function dotPlot() {
   const groups = groupCells($("#dot-group").value);
   const xs = [], ys = [], size = [], col = [], text = [];
   for (const g of genes.slice(0, 40)) {
-    const v = await gene(g);
-    for (const grp of groups) {
+    const v = await gene(g), means = [];
+    const recs = groups.map((grp) => {
       let s = 0, nz = 0; for (const i of grp.cells) { s += v[i]; if (v[i] > 0) nz++; }
-      const frac = nz / grp.cells.length, mean = s / grp.cells.length;
-      xs.push(g); ys.push(grp.name); size.push(4 + 22 * Math.sqrt(frac)); col.push(mean);
-      text.push(`${g} in ${grp.name}<br>${(100 * frac).toFixed(1)}% expressing<br>mean ${mean.toFixed(2)}<br>${grp.cells.length} cells`);
+      means.push(s / grp.cells.length);
+      return { grp, frac: nz / grp.cells.length, mean: s / grp.cells.length };
+    });
+    const top = Math.max(...means) || 1;            // colour scaled within each gene (0 = lowest group, 1 = highest)
+    for (const r of recs) {
+      xs.push(g); ys.push(r.grp.name); size.push(3 + 24 * Math.sqrt(r.frac)); col.push(r.mean / top);
+      text.push(`${g} in ${r.grp.name}<br>${(100 * r.frac).toFixed(1)}% of cells express it<br>mean ${r.mean.toFixed(2)} (log-normalised)<br>${r.grp.cells.length} cells`);
     }
   }
   P("dot-plot", [{ type: "scatter", mode: "markers", x: xs, y: ys, text, hoverinfo: "text",
-    marker: { size, color: col, colorscale: SEQ.map((c, i) => [i / (SEQ.length - 1), c]), line: { width: 0.5, color: css("--line") },
-      colorbar: { title: { text: "mean", side: "right" }, thickness: 10 } } }],
-  { height: Math.max(360, 26 * groups.length + 120), xaxis: { tickangle: -45 }, yaxis: { autorange: "reversed", automargin: true } });
+    marker: { size, color: col, cmin: 0, cmax: 1, colorscale: SEQ.slice(1).map((c, i) => [i / (SEQ.length - 2), c]), line: { width: 0.5, color: css("--muted") },
+      colorbar: { title: { text: "mean, scaled<br>within gene", side: "right" }, thickness: 10, tickvals: [0, 1], ticktext: ["low", "high"] } } }],
+  { height: Math.max(360, 24 * groups.length + 140), xaxis: { tickangle: -45, side: "top" }, yaxis: { autorange: "reversed", automargin: true },
+    margin: { l: 150, r: 20, t: 80, b: 20 } });
   if (missing.length) $("#dot-plot").insertAdjacentHTML("afterbegin", `<p class="muted">Not in the gene panel: ${esc(missing.join(", "))}</p>`);
 }
 
@@ -674,7 +701,7 @@ async function main() {
   };
   $("#intro-close").onclick = () => { $("#intro").hidden = true; try { localStorage.setItem("introHidden", "1"); } catch { /* ignore */ } };
   $("#split").onclick = () => setSplit(!V[1].on);
-  $("#link-zoom").onchange = (e) => { if (e.target.checked && V[1].on) V[1].plot.lookAt(V[0].plot.get("cameraView"), { preventEvent: true }); };
+  $("#link-zoom").onchange = (e) => { if (e.target.checked && V[1].on) setCamera(V[1], V[0].plot.get("cameraView")); };
   $("#emb").onchange = async (e) => { S.emb = e.target.value; await drawAll(); for (const v of V) v.plot.reset(); };
   $("#psize").oninput = () => { for (const v of V) v.plot.set({ pointSize: +$("#psize").value }); };
   $("#filter-reset").onclick = () => { S.filters = {}; $$("#filters .chip").forEach((c) => c.classList.remove("on")); updateFilterCount(); drawAll(); };
