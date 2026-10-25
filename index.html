@@ -6,7 +6,7 @@
 <title>Myeloid Atlas Explorer</title>
 <meta name="description" content="Interactive explorer of curated bone-marrow (BM25) and blood (PBMC4) single-cell atlases of clonal haematopoiesis and myeloid neoplasms: genes, cytokine responses, cell types and donor-level results.">
 <link rel="stylesheet" href="style.css">
-<script src="https://cdnjs.cloudflare.com/ajax/libs/plotly.js/2.35.2/plotly.min.js" defer></script>
+<script src="https://cdn.jsdelivr.net/npm/plotly.js-dist-min@2.35.2/plotly.min.js" defer></script>
 </head>
 <body>
 <header class="top">
@@ -39,10 +39,12 @@
       <kbd>Shift</kbd>+drag to lasso cells.
       <button class="link" id="intro-close">Hide</button>
     </div>
+    <button id="split" class="split-btn" aria-pressed="false">Split view: compare two colourings</button>
+    <label id="link-zoom-wrap" class="inline" hidden><input type="checkbox" id="link-zoom" checked> Link zoom and pan of the two maps</label>
     <label>Map
       <select id="emb"><option value="global">Whole atlas (UMAP)</option></select>
     </label>
-    <label>Colour by
+    <label>Colour by <span class="split-only muted">(left map)</span>
       <select id="colour"></select>
     </label>
     <label>Gene
@@ -64,16 +66,37 @@
     <label>Point size <input id="psize" type="range" min="1" max="8" step="0.5" value="2.5"></label>
   </aside>
 
-  <div class="plot-wrap">
-    <canvas id="canvas"></canvas>
-    <div id="tooltip" class="tooltip" hidden></div>
-    <div class="plot-caption" id="plot-caption"></div>
-    <button id="reset-view" class="small floating">Reset view</button>
+  <div class="maps">
+    <div class="plot-wrap" id="mapA">
+      <span class="map-chip"></span>
+      <canvas></canvas>
+      <div class="tooltip" hidden></div>
+      <div class="plot-caption"></div>
+      <button id="reset-view" class="small floating">Reset view</button>
+    </div>
+    <div class="plot-wrap" id="mapB" hidden>
+      <div class="mapbar">
+        <select id="colourB" aria-label="Right map: colour by"></select>
+        <input id="geneB" list="gene-list" placeholder="gene" aria-label="Right map: gene" autocomplete="off">
+        <select id="cytokineB" aria-label="Right map: cytokine response"></select>
+        <select id="moduleB" aria-label="Right map: response module"></select>
+      </div>
+      <span class="map-chip"></span>
+      <canvas></canvas>
+      <div class="tooltip" hidden></div>
+      <div class="plot-caption"></div>
+    </div>
   </div>
 
   <aside class="legend-panel">
+    <p class="legend-head" id="legend-headA" hidden>Left map</p>
     <h3 id="legend-title">Legend</h3>
     <div id="legend"></div>
+    <div id="legendB-wrap" hidden>
+      <p class="legend-head">Right map</p>
+      <h3 id="legend-titleB"></h3>
+      <div id="legendB"></div>
+    </div>
     <div id="selection" hidden>
       <h3>Lasso selection <button class="link" id="sel-clear">clear</button></h3>
       <div id="sel-summary"></div>
@@ -186,6 +209,7 @@
   <p class="muted" id="about-build"></p>
   <p>Analysis code: <a href="https://github.com/ad2n15/cytokines-mediated-inflammation">github.com/ad2n15/cytokines-mediated-inflammation</a>.
   Please cite the original studies (accessions above) and the accompanying manuscript when using these data.</p>
+  <p class="muted">Licence: code MIT; data and figures CC BY 4.0 (<a href="https://github.com/ad2n15/myeloid-atlas-explorer/blob/main/LICENSE-DATA.md">details</a>).</p>
 </section>
 </main>
 

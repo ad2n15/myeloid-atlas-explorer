@@ -57,8 +57,23 @@ main { flex: 1; min-height: 0; }
 .chip { font-size: 11.5px; border: 1px solid var(--line); border-radius: 12px; padding: 1px 8px; cursor: pointer; user-select: none; background: var(--surface); }
 .chip.on { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
 
-.plot-wrap { position: relative; background: var(--plot-bg); min-width: 0; }
-#canvas { width: 100%; height: 100%; display: block; }
+.maps { display: flex; min-width: 0; min-height: 0; }
+.plot-wrap { position: relative; background: var(--plot-bg); min-width: 0; flex: 1; display: flex; flex-direction: column; }
+.plot-wrap[hidden] { display: none; }
+.plot-wrap canvas { width: 100%; flex: 1; min-height: 0; display: block; }
+#mapB { border-left: 2px solid var(--line); }
+.mapbar { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 4px; padding: 6px; background: var(--surface); border-bottom: 1px solid var(--line); }
+.mapbar select, .mapbar input { font-size: 12px; padding: 3px 5px; }
+.map-chip { position: absolute; left: 10px; top: 10px; z-index: 4; font-size: 12px; background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 1px 9px; color: var(--ink2); pointer-events: none; max-width: 60%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+#mapB .map-chip { top: 52px; }
+.split-btn { background: var(--hi); font-weight: 600; text-align: left; }
+.split-btn[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); }
+.controls label.inline { flex-direction: row; align-items: center; gap: 6px; }
+.split-only { display: none; }
+#tab-explore.split .split-only { display: inline; }
+.legend-head { margin: 10px 0 2px; font-size: 11px; text-transform: uppercase; letter-spacing: .05em; color: var(--muted); }
+.error { color: #b3261e; }
+.run-note { margin: 4px 0; }
 .tooltip { position: absolute; pointer-events: none; background: var(--surface); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; font-size: 12px; max-width: 280px; box-shadow: 0 2px 8px rgba(0,0,0,.15); z-index: 5; }
 .tooltip b { font-weight: 600; }
 .plot-caption { position: absolute; left: 10px; bottom: 8px; font-size: 12px; color: var(--muted); max-width: 70%; }
@@ -101,7 +116,11 @@ th { color: var(--ink2); font-weight: 600; }
   header.top { gap: 8px; padding: 8px; }
   .tabs { margin-left: 0; width: 100%; overflow-x: auto; }
   #tab-explore.active { display: flex; flex-direction: column; height: auto; }
-  .plot-wrap { height: 62vh; order: 1; }
+  .maps { order: 1; flex-direction: column; }
+  .plot-wrap { height: 62vh; flex: none; }
+  #tab-explore.split .plot-wrap { height: 50vh; }
+  #mapB { border-left: 0; border-top: 2px solid var(--line); }
+  .mapbar { grid-template-columns: 1fr 1fr; }
   .controls { order: 2; border-right: 0; border-top: 1px solid var(--line); }
   .legend-panel { order: 3; border-left: 0; border-top: 1px solid var(--line); max-height: 50vh; }
   .chart { height: 360px; } .chart.tall { height: 520px; }
