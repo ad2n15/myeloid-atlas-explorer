@@ -12,8 +12,8 @@ subsampled cells (`meta.json: n_cells`); cell `i` is the same cell in every file
 | `genes/<gene>.bin.gz` | gzip of: nonzero bitmap (ceil(n/8) bytes, bit i = cell i, least-significant bit first), then one uint8 per nonzero cell in cell order; value = byte / 255 × gene max (log1p of counts per 10,000) |
 | `scores/<kind>__<name>.bin.gz` | gzip of int8 per cell: −127 = not scored (cell type has no such signature); otherwise byte / `score_scale` = z-score within the cell type |
 | `data/results/*.json` | donor-level result tables as `{columns, data}` (row arrays) |
-| `data/results/ch_cell.json` | original cell-level huCIRA results (gseapy prerank) for the Heimlich 2024 CH cohort: contrast, sex (all/women/men), signature threshold (lfc), cell type, cytokine, functional group, NES, p, FDR q, cells compared, leading genes (first 25); duplicated runs removed |
-| `data/results/ch_concordance.json` | the same tests matched to the donor-level analysis: cell NES and q next to donor Hedges' g, score-test p and meta-analysis q |
+| `data/results/ch_cell.json` | original cell-level huCIRA results (gseapy prerank) for the Heimlich 2024 CH cohort: contrast, sex (all/women/men), signature threshold (lfc), cell type, cytokine, response module of that cytokine in that cell type (`docs/phase1/response_modules.tsv`; "unassigned" if the signature has no module there), NES, p, FDR q, cells compared, leading genes (first 25); duplicated runs removed |
+| `data/results/ch_concordance.json` | the same tests matched to the donor-level analysis: cell NES and q next to donor Hedges' g with 95% CI, score-test p and meta-analysis q |
 
 Per-cell scores: mean log1p of the signature genes minus the mean of expression-matched
 control genes (25 bins of mean expression, 50 controls per signature gene), computed for cells

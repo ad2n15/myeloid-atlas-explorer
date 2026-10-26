@@ -685,25 +685,32 @@ async function loadTable(name) {
 async function buildChCell() {
   const [cell, conc] = await Promise.all([loadTable("ch_cell"), loadTable("ch_concordance")]);
   S.ch = { cell, conc };
-  const groupOrder = [...new Set(cell.map((r) => r.group))].filter((g) => g !== "Other").concat(["Other"]);
-  S.ch.groupOrder = groupOrder;
-  const redraw = () => { safeCh("#c-heat", drawChHeat); updChCt(); };
-  const updChCt = () => {
-    const cur = $("#c-ct").value;
-    const cts = [...new Set(chRows().map((r) => r.celltype))].sort();
-    $("#c-ct").innerHTML = cts.map((c) => `<option value="${c}">${ctName(c)}</option>`).join("");
-    $("#c-ct").value = cts.includes(cur) ? cur : cts.includes("CD8_Memory_T_cell") ? "CD8_Memory_T_cell" : cts[0];
-    safeCh("#c-bar", drawChBars); safeCh("#c-cmp", drawChCompare);
+  const cts = [...new Set(cell.map((r) => r.celltype))].sort();
+  $("#c-ct").innerHTML = cts.map((c) => `<option value="${c}">${ctName(c)}</option>`).join("");
+  $("#c-ct").value = cts.includes("CD8_Memory_T_cell") ? "CD8_Memory_T_cell" : cts[0];
+  const all = () => { safeCh("#c-heat", drawChHeat); safeCh("#c-bar", drawChBars); safeCh("#c-cmp", drawChCompare); updCyto(); };
+  const updCyto = () => {
+    const cur = $("#c-cyto").value, cys = [...new Set(chRows().map((r) => r.cytokine))].sort();
+    $("#c-cyto").innerHTML = cys.map((c) => `<option>${esc(c)}</option>`).join("");
+    $("#c-cyto").value = cys.includes(cur) ? cur : cys.includes("IFN-gamma") ? "IFN-gamma" : cys[0];
+    safeCh("#c-forest", drawChForest);
   };
-  ["#c-con", "#c-sex", "#c-lfc", "#c-sig"].forEach((s) => ($(s).onchange = redraw));
-  $("#c-ct").onchange = () => { safeCh("#c-bar", drawChBars); safeCh("#c-cmp", drawChCompare); };
-  redraw();
+  ["#c-con", "#c-sex", "#c-lfc", "#c-sig", "#c-ct"].forEach((s) => ($(s).onchange = all));
+  $("#c-cyto").onchange = () => safeCh("#c-forest", drawChForest);
+  all();
 }
 function safeCh(sel, fn) { try { fn(); } catch (e) { console.error(e); $(sel).innerHTML = `<p class="error">Could not draw this section: ${esc(e.message)}</p>`; } }
 
-function chRows() {
-  const con = $("#c-con").value, sex = $("#c-sex").value, lfc = +$("#c-lfc").value;
-  return S.ch.cell.filter((r) => r.contrast === con && r.sex === sex && Math.abs(r.lfc - lfc) < 1e-6);
+function chRows(sex) {
+  const con = $("#c-con").value, lfc = +$("#c-lfc").value, sx = sex || $("#c-sex").value;
+  return S.ch.cell.filter((r) => r.contrast === con && r.sex === sx && Math.abs(r.lfc - lfc) < 1e-6);
+}
+// module of each cytokine in the reference cell type, in display order (interferon first, unassigned last)
+function moduleOf(ct) {
+  const m = new Map(S.ch.cell.filter((r) => r.celltype === ct).map((r) => [r.cytokine, r.module]));
+  const order = [...new Set(m.values())].sort((a, b) => (a === "Interferon response" ? -1 : b === "Interferon response" ? 1 :
+    a === "unassigned" ? 1 : b === "unassigned" ? -1 : a.localeCompare(b)));
+  return { get: (c) => m.get(c) || "unassigned", rank: (c) => { const i = order.indexOf(m.get(c) || "unassigned"); return i < 0 ? order.length : i; } };
 }
 
 function drawChHeat() {
@@ -715,42 +722,69 @@ function drawChHeat() {
     const keep = new Set(rows.filter((r) => r.q < 0.05).map((r) => r.cytokine));
     rows = rows.filter((r) => keep.has(r.cytokine));
   }
+  const ref = $("#c-ct").value, mod = moduleOf(ref);
   const cts = [...new Set(rows.map((r) => r.celltype))].sort();
-  const go = S.ch.groupOrder;
-  const cyt = [...new Set(rows.map((r) => r.cytokine))].sort((a, b) => {
-    const ga = go.indexOf(rows.find((r) => r.cytokine === a).group), gb = go.indexOf(rows.find((r) => r.cytokine === b).group);
-    return ga - gb || a.localeCompare(b);
-  });
+  const cyt = [...new Set(rows.map((r) => r.cytokine))].sort((a, b) => mod.rank(a) - mod.rank(b) || a.localeCompare(b));
   const key = (c, t) => c + "|" + t, idx = new Map(rows.map((r) => [key(r.cytokine, r.celltype), r]));
   const z = cyt.map((c) => cts.map((t) => idx.get(key(c, t))?.NES ?? null));
   const text = cyt.map((c) => cts.map((t) => { const r = idx.get(key(c, t)); return r && r.q < 0.05 ? "•" : ""; }));
   const hover = cyt.map((c) => cts.map((t) => {
     const r = idx.get(key(c, t)); if (!r) return "not tested";
-    return `${c} (${r.group}) in ${ctName(t)}<br>NES ${r.NES.toFixed(2)}, q ${fq(r.q)}<br>${r.n_cells_test} vs ${r.n_cells_ref} cells`;
+    return `${c} in ${ctName(t)} (module there: ${r.module})<br>NES ${r.NES.toFixed(2)}, q ${fq(r.q)}<br>${r.n_cells_test} vs ${r.n_cells_ref} cells`;
   }));
-  const ylab = cyt.map((c) => `${c}  ·  ${rows.find((r) => r.cytokine === c).group}`);
-  P("c-heat", [{ type: "heatmap", z, x: cts.map(ctName), y: ylab, text, texttemplate: "%{text}", textfont: { size: 14, color: "#111" },
-    hovertext: hover, hoverinfo: "text", colorscale: DIV.map((c, i) => [i / (DIV.length - 1), c]), zmid: 0, zmin: -3.5, zmax: 3.5,
-    colorbar: { title: { text: "NES" }, thickness: 10 }, xgap: 1, ygap: 1 }],
+  const ylab = cyt.map((c) => `${c}  ·  ${mod.get(c)}`);
+  P("c-heat", [{ type: "heatmap", z, x: cts.map((t) => (t === ref ? `<b>${ctName(t)}</b>` : ctName(t))), y: ylab, text, texttemplate: "%{text}",
+    textfont: { size: 14, color: "#111" }, hovertext: hover, hoverinfo: "text", colorscale: DIV.map((c, i) => [i / (DIV.length - 1), c]),
+    zmid: 0, zmin: -3.5, zmax: 3.5, colorbar: { title: { text: "NES" }, thickness: 10 }, xgap: 1, ygap: 1 }],
   { height: Math.max(420, 17 * cyt.length + 170), xaxis: { tickangle: -35, automargin: true, side: "top" },
-    yaxis: { autorange: "reversed", automargin: true, dtick: 1, tickfont: { size: 10 } }, margin: { l: 260, r: 20, t: 110, b: 20 } });
+    yaxis: { autorange: "reversed", automargin: true, dtick: 1, tickfont: { size: 10 } }, margin: { l: 280, r: 20, t: 110, b: 20 } });
   const el = document.getElementById("c-heat");
   el.removeAllListeners?.("plotly_click");
   el.on?.("plotly_click", (ev) => {
     const pt = ev.points[0], r = idx.get(key(cyt[pt.pointNumber[0]], cts[pt.pointNumber[1]]));
     if (!r) return;
-    $("#c-genes").innerHTML = `<p style="font-size:12.5px"><b>${esc(r.cytokine)} in ${esc(ctName(r.celltype))}</b> — NES ${r.NES.toFixed(2)}, q ${fq(r.q)};
+    $("#c-genes").innerHTML = `<p style="font-size:12.5px"><b>${esc(r.cytokine)} in ${esc(ctName(r.celltype))}</b> (module: ${esc(r.module)}) — NES ${r.NES.toFixed(2)}, q ${fq(r.q)};
       ${r.n_genes} signature genes; leading genes (first 25): ${esc(r.lead.split(";").join(", ") || "none")}</p>`;
   });
 }
 
 function drawChBars() {
   const ct = $("#c-ct").value, rows = chRows().filter((r) => r.celltype === ct).sort((a, b) => a.NES - b.NES);
-  P("c-bar", [{ type: "bar", orientation: "h", y: rows.map((r) => r.cytokine), x: rows.map((r) => r.NES),
-    marker: { color: rows.map((r) => (r.q < 0.05 ? (r.NES > 0 ? DIV[5] : DIV[1]) : GREY)) },
-    hovertext: rows.map((r) => `${r.cytokine} (${r.group}): NES ${r.NES.toFixed(2)}, q ${fq(r.q)}`), hoverinfo: "text" }],
-  { height: Math.max(320, 17 * rows.length + 80), xaxis: { title: `NES in ${ctName(ct)} (coloured: q < 0.05)`, zeroline: true },
-    margin: { l: 110, r: 20, t: 10, b: 50 } });
+  $("#c-bar-title").textContent = `One cell type: ${ctName(ct)}`;
+  const mods = [...new Set(rows.map((r) => r.module))];
+  const colour = (m) => (m === "unassigned" ? GREY : DISTINCT[mods.filter((x) => x !== "unassigned").indexOf(m) % DISTINCT.length]);
+  P("c-bar", mods.map((m) => {
+    const rs = rows.filter((r) => r.module === m);
+    return { type: "bar", orientation: "h", name: m, y: rs.map((r) => r.cytokine), x: rs.map((r) => r.NES),
+      marker: { color: colour(m), opacity: rs.map((r) => (r.q < 0.05 ? 1 : 0.35)) },
+      hovertext: rs.map((r) => `${r.cytokine} (${m}): NES ${r.NES.toFixed(2)}, q ${fq(r.q)}`), hoverinfo: "text" };
+  }), { height: Math.max(340, 17 * rows.length + 120), barmode: "overlay", showlegend: true, legend: { title: { text: "response module: " }, orientation: "h", y: -0.18 },
+    xaxis: { title: `NES in ${ctName(ct)}`, zeroline: true },
+    yaxis: { categoryorder: "array", categoryarray: rows.map((r) => r.cytokine), automargin: true }, margin: { l: 110, r: 20, t: 10, b: 50 } });
+}
+
+function drawChForest() {
+  const cy = $("#c-cyto").value, con = $("#c-con").value, lfc = +$("#c-lfc").value;
+  const sexes = [["all", "all donors", "circle"], ["women", "women", "triangle-up"], ["men", "men", "square"]];
+  const by = Object.fromEntries(sexes.map(([s]) => [s, new Map(chRows(s).filter((r) => r.cytokine === cy).map((r) => [r.celltype, r]))]));
+  const cts = [...new Set(Object.values(by).flatMap((m) => [...m.keys()]))].sort();
+  const y = cts.map(ctName);
+  const traces = sexes.map(([s, name, sym]) => {
+    const rs = cts.map((t) => by[s].get(t));
+    return { type: "scatter", mode: "markers", name, xaxis: "x", y, x: rs.map((r) => r?.NES ?? null),
+      marker: { symbol: rs.map((r) => (r && r.q < 0.05 ? sym : sym + "-open")), size: 10, color: s === "all" ? css("--accent") : s === "women" ? "#eb6834" : "#6250d6" },
+      hovertext: rs.map((r, i) => (r ? `${cts[i]} · ${name}: NES ${r.NES.toFixed(2)}, q ${fq(r.q)} (${r.n_cells_test} vs ${r.n_cells_ref} cells)` : "")), hoverinfo: "text" };
+  });
+  const d = cts.map((t) => S.ch.conc.find((r) => r.contrast === con && Math.abs(r.lfc - lfc) < 1e-6 && r.celltype === t && r.cytokine === cy && r.g_donor != null));
+  traces.push({ type: "scatter", mode: "markers", name: "donor level (g, 95% CI)", xaxis: "x2", y, x: d.map((r) => r?.g_donor ?? null),
+    error_x: { type: "data", symmetric: false, array: d.map((r) => (r && r.ci_high != null ? r.ci_high - r.g_donor : null)),
+      arrayminus: d.map((r) => (r && r.ci_low != null ? r.g_donor - r.ci_low : null)), color: css("--muted") },
+    marker: { symbol: "diamond", size: 11, color: d.map((r) => (r && r.q_donor_score < 0.1 ? css("--accent") : css("--ink2"))) },
+    hovertext: d.map((r, i) => (r ? `${cts[i]} · donor level: g ${r.g_donor.toFixed(2)} [${r.ci_low?.toFixed(2)}, ${r.ci_high?.toFixed(2)}], q ${fq(r.q_donor_score)} (${r.n_test} vs ${r.n_ref} donors)` : "no donor-level test")), hoverinfo: "text" });
+  P("c-forest", traces, { height: Math.max(320, 30 * cts.length + 120), grid: { rows: 1, columns: 2 },
+    xaxis: { domain: [0, 0.47], title: `${cy}: cell-level NES`, zeroline: true },
+    xaxis2: { domain: [0.53, 1], title: `${cy}: donor-level Hedges' g (95% CI)`, zeroline: true, anchor: "y" },
+    yaxis: { autorange: "reversed", automargin: true }, legend: { orientation: "h", y: -0.2 }, margin: { l: 150, r: 20, t: 10, b: 80 } });
 }
 
 function drawChCompare() {

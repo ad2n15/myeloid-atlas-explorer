@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Myeloid Atlas Explorer</title>
 <meta name="description" content="Interactive explorer of curated bone-marrow (BM25) and blood (PBMC4) single-cell atlases of clonal haematopoiesis and myeloid neoplasms: genes, cytokine responses, cell types and donor-level results.">
-<link rel="stylesheet" href="style.css?v=1793009719">
+<link rel="stylesheet" href="style.css?v=1793010442">
 <script src="https://cdn.jsdelivr.net/npm/plotly.js-dist-min@2.35.2/plotly.min.js" defer></script>
 </head>
 <body>
@@ -190,11 +190,13 @@
   <div class="card">
     <h2>Cytokine responses by cell type (cell level)</h2>
     <p class="muted">NES (normalised enrichment score): &gt; 0 = signature genes are higher in carriers' cells, &lt; 0 = lower. • = FDR q &lt; 0.05.
-    Rows are grouped by the cytokine functional groups used in the original analysis. Click a square to list its leading genes.</p>
+    Rows are grouped by the project's <b>response modules</b> (cytokine signatures from the huCIRA dictionary that share genes), which differ
+    between cell types — choose the cell type whose modules define the grouping. Click a square to list its leading genes.</p>
     <div class="row">
       <label>Comparison <select id="c-con"><option value="CH_TET2 vs healthy">TET2 carriers vs healthy</option><option value="CH_DNMT3A vs healthy">DNMT3A carriers vs healthy</option></select></label>
       <label>Donors <select id="c-sex"><option value="all">all</option><option value="women">women only</option><option value="men">men only</option></select></label>
       <label>Signature genes <select id="c-lfc"><option value="1">log fold change ≥ 1 (main)</option><option value="0.8">log fold change ≥ 0.8</option></select></label>
+      <label>Group rows by modules of <select id="c-ct"></select></label>
       <label><input type="checkbox" id="c-sig"> only q &lt; 0.05</label>
     </div>
     <p class="muted" id="c-cells"></p>
@@ -202,9 +204,16 @@
     <div id="c-genes" class="table-wrap"></div>
   </div>
   <div class="card">
-    <h2>One cell type</h2>
-    <div class="row"><label>Cell type <select id="c-ct"></select></label></div>
+    <h2 id="c-bar-title">One cell type</h2>
+    <p class="muted">Same comparison, the cell type chosen above; bars coloured by response module, faded = q ≥ 0.05.</p>
     <div id="c-bar" class="chart"></div>
+  </div>
+  <div class="card">
+    <h2>Forest plot: one cytokine across cell types</h2>
+    <p class="muted">Left: cell-level NES for all donors, women and men (filled = q &lt; 0.05). GSEA gives no confidence interval, so points have no
+    error bars. Right: the donor-level effect (Hedges' g, 95% CI) for the same cytokine and cell type, all donors.</p>
+    <div class="row"><label>Cytokine <select id="c-cyto"></select></label></div>
+    <div id="c-forest" class="chart"></div>
   </div>
   <div class="card">
     <h2>Cell level vs donor level, same comparison</h2>
@@ -257,6 +266,6 @@
 </section>
 </main>
 
-<script type="module" src="app.js?v=1793009719"></script>
+<script type="module" src="app.js?v=1793010442"></script>
 </body>
 </html>

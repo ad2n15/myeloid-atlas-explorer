@@ -452,9 +452,12 @@ def build_results() -> None:
 
 
 def build_ch_cell(out: Path) -> None:
-    """Original cell-level huCIRA results for the Heimlich 2024 CH cohort, and their donor-level counterparts."""
-    from summarize_hucira_bm24 import CYTOKINE_GROUPS
-    group = {c: g for g, cs in CYTOKINE_GROUPS.items() for c in cs}
+    """Original cell-level huCIRA results for the Heimlich 2024 CH cohort, and their donor-level counterparts.
+
+    Cytokines are labelled with the project's data-driven response modules (docs/phase1/response_modules.tsv),
+    which are cell-type specific; signatures without a module in that cell type are "unassigned".
+    """
+    mods = pd.read_csv(REPO / "docs/phase1/response_modules.tsv", sep="\t")[["celltype", "cytokine", "module"]]
     runs = {"all": REPO / "results/hucira_pbmc4_gse/CXG_HEIMLICH_2024",
             "women": REPO / "results/hucira_pbmc4_gse_by_sex/female/CXG_HEIMLICH_2024",
             "men": REPO / "results/hucira_pbmc4_gse_by_sex/male/CXG_HEIMLICH_2024"}
@@ -466,23 +469,25 @@ def build_ch_cell(out: Path) -> None:
             rows.append(pd.DataFrame({
                 "contrast": f"CH_{geno} vs healthy", "sex": sex, "lfc": d["threshold_lfc"], "direction": d["direction"],
                 "celltype": d["celltype_signature"], "cytokine": d["cytokine"],
-                "group": d["cytokine"].map(group).fillna("Other"), "NES": d["NES"], "p": d["NOM p-val"],
+                "NES": d["NES"], "p": d["NOM p-val"],
                 "q": d["FDR q-val"], "n_cells_test": d["num_cells_1"], "n_cells_ref": d["num_cells_2"],
                 "n_genes": d["num_shared_genes_signature"],
                 "lead": d["Lead_genes"].fillna("").map(lambda s: ";".join(str(s).split(";")[:25]))}))
     cell = pd.concat(rows, ignore_index=True)
     # the original tables hold repeated runs of some tests; keep the first, as in hucira_concordance.read_original
     cell = cell.drop_duplicates(["contrast", "sex", "lfc", "celltype", "cytokine"])
+    cell = cell.merge(mods, on=["celltype", "cytokine"], how="left")
+    cell["module"] = cell["module"].fillna("unassigned").str.replace("other: ", "", regex=False)
     dump_table(out / "ch_cell.json", cell, rnd=6)
     conc = []
     for name, lfc in (("main", 1.0), ("lfc0.8", 0.8)):
-        meta = pd.read_csv(REPO / f"docs/phase1/meta_{name}.tsv", sep="\t")[["group", "celltype", "cytokine", "q"]]
+        meta = pd.read_csv(REPO / f"docs/phase1/meta_{name}.tsv", sep="\t")[["group", "celltype", "cytokine", "q", "ci_low", "ci_high"]]
         c = pd.read_csv(REPO / f"docs/phase2/hucira_prerank/concordance_{name}.tsv", sep="\t")
         c = c[c["contrast"].astype(str).str.startswith("CXG_HEIMLICH_2024__")].copy()
         c["group"] = c["contrast"].str.split("__").str[1].str.replace("_vs_", " vs ")
         c = c.merge(meta.rename(columns={"q": "q_donor_score"}), on=["group", "celltype", "cytokine"], how="left")
         conc.append(c.assign(lfc=lfc)[["group", "lfc", "celltype", "cytokine", "NES_cell", "q_cell", "n_test", "n_ref",
-                                       "g_donor", "score_p", "q_donor_score"]].rename(columns={"group": "contrast"}))
+                                       "g_donor", "ci_low", "ci_high", "score_p", "q_donor_score"]].rename(columns={"group": "contrast"}))
     dump_table(out / "ch_concordance.json", pd.concat(conc, ignore_index=True), rnd=6)
     print(f"CH cell level: {len(cell)} tests; concordance rows: {sum(len(c) for c in conc)}")
 
