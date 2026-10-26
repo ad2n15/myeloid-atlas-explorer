@@ -36,7 +36,7 @@ header.top { display: flex; align-items: center; gap: 16px; padding: 8px 16px; b
 .atlas-switch button[aria-checked="true"] { background: var(--accent); color: var(--accent-ink); }
 .atlas-switch button[aria-checked="true"] small { color: inherit; opacity: .8; }
 .tabs { display: flex; gap: 4px; margin-left: auto; }
-.tabs button { border: 0; background: none; padding: 6px 10px; border-bottom: 2px solid transparent; border-radius: 0; }
+.tabs button { white-space: nowrap; border: 0; background: none; padding: 6px 10px; border-bottom: 2px solid transparent; border-radius: 0; }
 .tabs button.active { border-bottom-color: var(--accent); font-weight: 600; }
 
 .loading { position: fixed; inset: 50% auto auto 50%; transform: translate(-50%, -50%); background: var(--surface); border: 1px solid var(--line); padding: 10px 18px; border-radius: var(--radius); z-index: 20; box-shadow: 0 2px 10px rgba(0,0,0,.12); }
@@ -92,7 +92,7 @@ main { flex: 1; min-height: 0; }
 .bars .bar { display: grid; grid-template-columns: 1fr 70px 38px; gap: 4px; align-items: center; font-size: 11.5px; }
 .bars .bar span.b { height: 8px; background: var(--accent); border-radius: 4px; }
 
-#tab-compare, #tab-results, #tab-about { overflow-y: auto; height: calc(100vh - 58px); padding: 16px; }
+#tab-compare, #tab-results, #tab-chcell, #tab-about { overflow-y: auto; height: calc(100vh - 58px); padding: 16px; }
 .card { background: var(--surface); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px 16px; margin: 0 auto 16px; max-width: 1180px; }
 .card.note { background: var(--hi); }
 .card h2 { font-size: 15px; margin: 0 0 6px; }
@@ -123,5 +123,5 @@ th { color: var(--ink2); font-weight: 600; }
   .controls { order: 2; border-right: 0; border-top: 1px solid var(--line); }
   .legend-panel { order: 3; border-left: 0; border-top: 1px solid var(--line); max-height: 50vh; }
   .chart { height: 360px; } .chart.tall { height: 520px; }
-  #tab-compare, #tab-results, #tab-about { height: auto; padding: 10px; }
+  #tab-compare, #tab-results, #tab-chcell, #tab-about { height: auto; padding: 10px; }
 }

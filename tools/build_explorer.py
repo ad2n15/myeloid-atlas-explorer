@@ -447,7 +447,52 @@ def build_results() -> None:
     dump("studies", rd("docs/data_collection/atlas_studies.tsv"), list(rd("docs/data_collection/atlas_studies.tsv").columns))
     dump("modules", rd("docs/phase1/response_modules.tsv"), ["celltype", "cytokine", "module", "n_genes",
                                                              "frac_ifn_shared", "frac_cell_cycle"])
+    build_ch_cell(out)
     print(f"wrote {out}")
+
+
+def build_ch_cell(out: Path) -> None:
+    """Original cell-level huCIRA results for the Heimlich 2024 CH cohort, and their donor-level counterparts."""
+    from summarize_hucira_bm24 import CYTOKINE_GROUPS
+    group = {c: g for g, cs in CYTOKINE_GROUPS.items() for c in cs}
+    runs = {"all": REPO / "results/hucira_pbmc4_gse/CXG_HEIMLICH_2024",
+            "women": REPO / "results/hucira_pbmc4_gse_by_sex/female/CXG_HEIMLICH_2024",
+            "men": REPO / "results/hucira_pbmc4_gse_by_sex/male/CXG_HEIMLICH_2024"}
+    rows = []
+    for sex, root in runs.items():
+        for f in sorted(root.glob("*_vs_control/*/tables/*_all_enrichment_results.csv")):
+            geno = f.parts[-4].split("_vs_")[0]
+            d = pd.read_csv(f)
+            rows.append(pd.DataFrame({
+                "contrast": f"CH_{geno} vs healthy", "sex": sex, "lfc": d["threshold_lfc"], "direction": d["direction"],
+                "celltype": d["celltype_signature"], "cytokine": d["cytokine"],
+                "group": d["cytokine"].map(group).fillna("Other"), "NES": d["NES"], "p": d["NOM p-val"],
+                "q": d["FDR q-val"], "n_cells_test": d["num_cells_1"], "n_cells_ref": d["num_cells_2"],
+                "n_genes": d["num_shared_genes_signature"],
+                "lead": d["Lead_genes"].fillna("").map(lambda s: ";".join(str(s).split(";")[:25]))}))
+    cell = pd.concat(rows, ignore_index=True)
+    # the original tables hold repeated runs of some tests; keep the first, as in hucira_concordance.read_original
+    cell = cell.drop_duplicates(["contrast", "sex", "lfc", "celltype", "cytokine"])
+    dump_table(out / "ch_cell.json", cell, rnd=6)
+    conc = []
+    for name, lfc in (("main", 1.0), ("lfc0.8", 0.8)):
+        meta = pd.read_csv(REPO / f"docs/phase1/meta_{name}.tsv", sep="\t")[["group", "celltype", "cytokine", "q"]]
+        c = pd.read_csv(REPO / f"docs/phase2/hucira_prerank/concordance_{name}.tsv", sep="\t")
+        c = c[c["contrast"].astype(str).str.startswith("CXG_HEIMLICH_2024__")].copy()
+        c["group"] = c["contrast"].str.split("__").str[1].str.replace("_vs_", " vs ")
+        c = c.merge(meta.rename(columns={"q": "q_donor_score"}), on=["group", "celltype", "cytokine"], how="left")
+        conc.append(c.assign(lfc=lfc)[["group", "lfc", "celltype", "cytokine", "NES_cell", "q_cell", "n_test", "n_ref",
+                                       "g_donor", "score_p", "q_donor_score"]].rename(columns={"group": "contrast"}))
+    dump_table(out / "ch_concordance.json", pd.concat(conc, ignore_index=True), rnd=6)
+    print(f"CH cell level: {len(cell)} tests; concordance rows: {sum(len(c) for c in conc)}")
+
+
+def dump_table(path: Path, df: pd.DataFrame, rnd: int = 4) -> None:
+    df = df.copy()
+    for c in df.select_dtypes("float").columns:
+        df[c] = df[c].round(rnd)
+    recs = json.loads(df.to_json(orient="split", index=False))
+    path.write_text(json.dumps({"columns": recs["columns"], "data": recs["data"]}, separators=(",", ":")))
 
 
 def main() -> None:

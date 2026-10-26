@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Myeloid Atlas Explorer</title>
 <meta name="description" content="Interactive explorer of curated bone-marrow (BM25) and blood (PBMC4) single-cell atlases of clonal haematopoiesis and myeloid neoplasms: genes, cytokine responses, cell types and donor-level results.">
-<link rel="stylesheet" href="style.css?v=1793007047">
+<link rel="stylesheet" href="style.css?v=1793009719">
 <script src="https://cdn.jsdelivr.net/npm/plotly.js-dist-min@2.35.2/plotly.min.js" defer></script>
 </head>
 <body>
@@ -21,7 +21,8 @@
   <nav class="tabs" role="tablist">
     <button data-tab="explore" class="active">Explore</button>
     <button data-tab="compare">Compare</button>
-    <button data-tab="results">Results</button>
+    <button data-tab="results">Results: donor level</button>
+    <button data-tab="chcell">CH: cell level</button>
     <button data-tab="about">About</button>
     <button id="theme" title="Toggle light/dark" aria-label="Toggle theme">◐</button>
   </nav>
@@ -148,6 +149,7 @@
     patients are compared with healthy donors <i>from the same study</i>, and studies are pooled by meta-analysis.
     The effect is Hedges' g: g = 1 means the patients' average lies one healthy-donor standard deviation above the healthy average.
     q is the false-discovery-rate adjusted p (q &lt; 0.1 highlighted). These results are shared by both atlases.
+    For the original cell-level analysis of the clonal haematopoiesis cohort, see the <b>CH: cell level</b> tab.
   </div>
   <div class="card">
     <h2>Cytokine signatures: disease vs healthy</h2>
@@ -176,6 +178,44 @@
   </div>
 </section>
 
+<!-- ── CH: cell level ──────────────────────────────────── -->
+<section id="tab-chcell" class="tab">
+  <div class="card note">
+    <b>Cell-level analysis — exploratory.</b> This is the original huCIRA analysis of the Heimlich 2024 blood cohort of clonal haematopoiesis
+    (8 TET2 and 9 DNMT3A carriers vs 7 healthy donors). Here every <i>cell</i> is treated as an independent sample and significance comes from
+    gene-set enrichment (GSEA). Because cells of one person are not independent, this inflates significance: on random splits of healthy donors,
+    the same approach called 26% of tests significant, against 0.4% for the donor-level test. Use this view to see where signals point;
+    the <b>Results: donor level</b> tab is the basis of the paper's statistics.
+  </div>
+  <div class="card">
+    <h2>Cytokine responses by cell type (cell level)</h2>
+    <p class="muted">NES (normalised enrichment score): &gt; 0 = signature genes are higher in carriers' cells, &lt; 0 = lower. • = FDR q &lt; 0.05.
+    Rows are grouped by the cytokine functional groups used in the original analysis. Click a square to list its leading genes.</p>
+    <div class="row">
+      <label>Comparison <select id="c-con"><option value="CH_TET2 vs healthy">TET2 carriers vs healthy</option><option value="CH_DNMT3A vs healthy">DNMT3A carriers vs healthy</option></select></label>
+      <label>Donors <select id="c-sex"><option value="all">all</option><option value="women">women only</option><option value="men">men only</option></select></label>
+      <label>Signature genes <select id="c-lfc"><option value="1">log fold change ≥ 1 (main)</option><option value="0.8">log fold change ≥ 0.8</option></select></label>
+      <label><input type="checkbox" id="c-sig"> only q &lt; 0.05</label>
+    </div>
+    <p class="muted" id="c-cells"></p>
+    <div id="c-heat" class="chart tall"></div>
+    <div id="c-genes" class="table-wrap"></div>
+  </div>
+  <div class="card">
+    <h2>One cell type</h2>
+    <div class="row"><label>Cell type <select id="c-ct"></select></label></div>
+    <div id="c-bar" class="chart"></div>
+  </div>
+  <div class="card">
+    <h2>Cell level vs donor level, same comparison</h2>
+    <p class="muted">For the selected comparison, cell type and signature threshold (all donors). Left: cell-level NES and q. Right: the donor-level
+    effect size (Hedges' g) and q from the <b>Results: donor level</b> tab. Signals usually point the same way, but with 7–9 donors per group
+    only large donor-level effects reach significance.</p>
+    <div id="c-cmp" class="chart"></div>
+    <div id="c-cmp-table" class="table-wrap"></div>
+  </div>
+</section>
+
 <!-- ── About ───────────────────────────────────────────── -->
 <section id="tab-about" class="tab prose">
   <h2>About this explorer</h2>
@@ -189,6 +229,8 @@
   <ul>
     <li><b>A subsample of cells.</b> To keep the site fast, each atlas shows a stratified subsample (every curated cell type × study is represented; rare types are kept whole). Counts in the legend refer to the subsample.</li>
     <li><b>Level 1 / Level 2 labels</b> are the curated lineages and sub-states used in the paper, assigned from marker genes per cluster and lineage-specific re-embedding.</li>
+    <li><b>Two kinds of results.</b> <i>Results: donor level</i> compares donors (the paper's analysis). <i>CH: cell level</i> shows the original
+    cell-level huCIRA analysis of the clonal haematopoiesis cohort, for exploration.</li>
     <li><b>CellTypist</b> labels (four reference models) and <b>author labels</b> are shown for comparison.</li>
     <li><b>Gene expression</b> is shown on a log scale (log1p of counts per 10,000; 0 = not detected), quantised to 256 levels. Only a panel of genes is included: marker genes, all genes of the cytokine signatures, cytokine ligands and receptors, and highly variable genes.</li>
     <li><b>Cytokine responses</b> use the Human Cytokine Dictionary (huCIRA) signatures: genes that a given cell type switches on after a given cytokine. For each cell whose type has signatures, the score is the average expression of the signature genes minus that of matched control genes, standardised within the cell type. Grey cells have no signature for that cytokine.</li>
@@ -215,6 +257,6 @@
 </section>
 </main>
 
-<script type="module" src="app.js?v=1793007047"></script>
+<script type="module" src="app.js?v=1793009719"></script>
 </body>
 </html>

@@ -10,6 +10,8 @@ and myeloid neoplasms: **BM25** (bone marrow / CD34⁺ progenitors, 25 studies) 
 - Compare genes across cell groups (dot plots, distributions) and check label agreement.
 - Browse the donor-level results (meta-analysis of cytokine-response signatures, response modules,
   cell-type composition).
+- Explore the original cell-level huCIRA analysis of the clonal haematopoiesis cohort (Heimlich 2024),
+  side by side with its donor-level counterpart.
 
 Each atlas is shown as a stratified subsample of cells (every curated cell type × study kept;
 rare types kept whole). Data come from public GEO and CELLxGENE studies listed in the app's

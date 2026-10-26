@@ -666,11 +666,114 @@ function drawProp() {
   { height: Math.max(280, 22 * rows.length + 80), xaxis: { title: "change in share of cells (log2 ratio, disease / reference); blue = q < 0.1 (propeller)" }, margin: { l: 130, r: 20, t: 10, b: 50 } });
 }
 
-function table(el, rows) {
+function table(el, rows, append = false) {
   if (!rows.length) return;
   const cols = Object.keys(rows[0]);
-  el.innerHTML = `<table><thead><tr>${cols.map((c) => `<th>${esc(pretty(c))}</th>`).join("")}</tr></thead><tbody>` +
+  const html = `<table><thead><tr>${cols.map((c) => `<th>${esc(pretty(c))}</th>`).join("")}</tr></thead><tbody>` +
     rows.map((r) => `<tr>${cols.map((c) => `<td>${esc(r[c] ?? "")}</td>`).join("")}</tr>`).join("") + "</tbody></table>";
+  if (append) el.insertAdjacentHTML("beforeend", html); else el.innerHTML = html;
+}
+
+// ── CH: cell level (original huCIRA, Heimlich 2024) ───────────────────────
+let chReady = null;
+function initChCell() { return (chReady ||= buildChCell()); }
+async function loadTable(name) {
+  const j = await (await fetch(`data/results/${name}.json`)).json();
+  return j.data.map((r) => Object.fromEntries(j.columns.map((c, i) => [c, r[i]])));
+}
+
+async function buildChCell() {
+  const [cell, conc] = await Promise.all([loadTable("ch_cell"), loadTable("ch_concordance")]);
+  S.ch = { cell, conc };
+  const groupOrder = [...new Set(cell.map((r) => r.group))].filter((g) => g !== "Other").concat(["Other"]);
+  S.ch.groupOrder = groupOrder;
+  const redraw = () => { safeCh("#c-heat", drawChHeat); updChCt(); };
+  const updChCt = () => {
+    const cur = $("#c-ct").value;
+    const cts = [...new Set(chRows().map((r) => r.celltype))].sort();
+    $("#c-ct").innerHTML = cts.map((c) => `<option value="${c}">${ctName(c)}</option>`).join("");
+    $("#c-ct").value = cts.includes(cur) ? cur : cts.includes("CD8_Memory_T_cell") ? "CD8_Memory_T_cell" : cts[0];
+    safeCh("#c-bar", drawChBars); safeCh("#c-cmp", drawChCompare);
+  };
+  ["#c-con", "#c-sex", "#c-lfc", "#c-sig"].forEach((s) => ($(s).onchange = redraw));
+  $("#c-ct").onchange = () => { safeCh("#c-bar", drawChBars); safeCh("#c-cmp", drawChCompare); };
+  redraw();
+}
+function safeCh(sel, fn) { try { fn(); } catch (e) { console.error(e); $(sel).innerHTML = `<p class="error">Could not draw this section: ${esc(e.message)}</p>`; } }
+
+function chRows() {
+  const con = $("#c-con").value, sex = $("#c-sex").value, lfc = +$("#c-lfc").value;
+  return S.ch.cell.filter((r) => r.contrast === con && r.sex === sex && Math.abs(r.lfc - lfc) < 1e-6);
+}
+
+function drawChHeat() {
+  let rows = chRows();
+  const big = rows.reduce((m, r) => (!m || r.n_cells_test + r.n_cells_ref > m.n_cells_test + m.n_cells_ref ? r : m), null);
+  const cells = big ? `Largest cell type: ${ctName(big.celltype)}, ${big.n_cells_test.toLocaleString()} carrier vs ${big.n_cells_ref.toLocaleString()} healthy cells; hover a square for its numbers.` : "";
+  $("#c-cells").textContent = rows.length ? `${rows.length} tests; ${rows.filter((r) => r.q < 0.05).length} with q < 0.05. ${cells}` : "No tests for this selection.";
+  if ($("#c-sig").checked) {
+    const keep = new Set(rows.filter((r) => r.q < 0.05).map((r) => r.cytokine));
+    rows = rows.filter((r) => keep.has(r.cytokine));
+  }
+  const cts = [...new Set(rows.map((r) => r.celltype))].sort();
+  const go = S.ch.groupOrder;
+  const cyt = [...new Set(rows.map((r) => r.cytokine))].sort((a, b) => {
+    const ga = go.indexOf(rows.find((r) => r.cytokine === a).group), gb = go.indexOf(rows.find((r) => r.cytokine === b).group);
+    return ga - gb || a.localeCompare(b);
+  });
+  const key = (c, t) => c + "|" + t, idx = new Map(rows.map((r) => [key(r.cytokine, r.celltype), r]));
+  const z = cyt.map((c) => cts.map((t) => idx.get(key(c, t))?.NES ?? null));
+  const text = cyt.map((c) => cts.map((t) => { const r = idx.get(key(c, t)); return r && r.q < 0.05 ? "•" : ""; }));
+  const hover = cyt.map((c) => cts.map((t) => {
+    const r = idx.get(key(c, t)); if (!r) return "not tested";
+    return `${c} (${r.group}) in ${ctName(t)}<br>NES ${r.NES.toFixed(2)}, q ${fq(r.q)}<br>${r.n_cells_test} vs ${r.n_cells_ref} cells`;
+  }));
+  const ylab = cyt.map((c) => `${c}  ·  ${rows.find((r) => r.cytokine === c).group}`);
+  P("c-heat", [{ type: "heatmap", z, x: cts.map(ctName), y: ylab, text, texttemplate: "%{text}", textfont: { size: 14, color: "#111" },
+    hovertext: hover, hoverinfo: "text", colorscale: DIV.map((c, i) => [i / (DIV.length - 1), c]), zmid: 0, zmin: -3.5, zmax: 3.5,
+    colorbar: { title: { text: "NES" }, thickness: 10 }, xgap: 1, ygap: 1 }],
+  { height: Math.max(420, 17 * cyt.length + 170), xaxis: { tickangle: -35, automargin: true, side: "top" },
+    yaxis: { autorange: "reversed", automargin: true, dtick: 1, tickfont: { size: 10 } }, margin: { l: 260, r: 20, t: 110, b: 20 } });
+  const el = document.getElementById("c-heat");
+  el.removeAllListeners?.("plotly_click");
+  el.on?.("plotly_click", (ev) => {
+    const pt = ev.points[0], r = idx.get(key(cyt[pt.pointNumber[0]], cts[pt.pointNumber[1]]));
+    if (!r) return;
+    $("#c-genes").innerHTML = `<p style="font-size:12.5px"><b>${esc(r.cytokine)} in ${esc(ctName(r.celltype))}</b> — NES ${r.NES.toFixed(2)}, q ${fq(r.q)};
+      ${r.n_genes} signature genes; leading genes (first 25): ${esc(r.lead.split(";").join(", ") || "none")}</p>`;
+  });
+}
+
+function drawChBars() {
+  const ct = $("#c-ct").value, rows = chRows().filter((r) => r.celltype === ct).sort((a, b) => a.NES - b.NES);
+  P("c-bar", [{ type: "bar", orientation: "h", y: rows.map((r) => r.cytokine), x: rows.map((r) => r.NES),
+    marker: { color: rows.map((r) => (r.q < 0.05 ? (r.NES > 0 ? DIV[5] : DIV[1]) : GREY)) },
+    hovertext: rows.map((r) => `${r.cytokine} (${r.group}): NES ${r.NES.toFixed(2)}, q ${fq(r.q)}`), hoverinfo: "text" }],
+  { height: Math.max(320, 17 * rows.length + 80), xaxis: { title: `NES in ${ctName(ct)} (coloured: q < 0.05)`, zeroline: true },
+    margin: { l: 110, r: 20, t: 10, b: 50 } });
+}
+
+function drawChCompare() {
+  const con = $("#c-con").value, lfc = +$("#c-lfc").value, ct = $("#c-ct").value;
+  const rows = S.ch.conc.filter((r) => r.contrast === con && Math.abs(r.lfc - lfc) < 1e-6 && r.celltype === ct && r.g_donor != null)
+    .sort((a, b) => b.NES_cell - a.NES_cell);
+  if (!rows.length) { $("#c-cmp").innerHTML = `<p class="muted">No donor-level counterpart for ${esc(ctName(ct))} (too few donors with enough cells).</p>`; $("#c-cmp-table").innerHTML = ""; return; }
+  const y = rows.map((r) => r.cytokine);
+  P("c-cmp", [
+    { type: "bar", orientation: "h", y, x: rows.map((r) => r.NES_cell), xaxis: "x", name: "cell level (NES)",
+      marker: { color: rows.map((r) => (r.q_cell < 0.05 ? css("--accent") : GREY)) }, hovertext: rows.map((r) => `cell level: NES ${r.NES_cell.toFixed(2)}, q ${fq(r.q_cell)}`), hoverinfo: "text" },
+    { type: "bar", orientation: "h", y, x: rows.map((r) => r.g_donor), xaxis: "x2", name: "donor level (g)",
+      marker: { color: rows.map((r) => (r.q_donor_score < 0.1 ? css("--accent") : GREY)) }, hovertext: rows.map((r) => `donor level: g ${r.g_donor.toFixed(2)}, p ${fq(r.score_p)}, q ${fq(r.q_donor_score)} (${r.n_test} vs ${r.n_ref} donors)`), hoverinfo: "text" }],
+  { height: Math.max(320, 18 * rows.length + 90), showlegend: false, grid: { rows: 1, columns: 2 },
+    xaxis: { domain: [0, 0.47], title: "cell level: NES (blue = q < 0.05)", zeroline: true },
+    xaxis2: { domain: [0.53, 1], title: "donor level: Hedges' g (blue = q < 0.1)", zeroline: true, anchor: "y" },
+    yaxis: { autorange: "reversed", automargin: true }, margin: { l: 110, r: 20, t: 10, b: 50 } });
+  const agree = rows.filter((r) => Math.sign(r.NES_cell) === Math.sign(r.g_donor)).length;
+  $("#c-cmp-table").innerHTML = `<p style="font-size:12.5px">Same direction in ${agree} of ${rows.length} cytokines;
+    significant at cell level: ${rows.filter((r) => r.q_cell < 0.05).length}; significant at donor level (q &lt; 0.1): ${rows.filter((r) => r.q_donor_score < 0.1).length}.</p>`;
+  table($("#c-cmp-table"), rows.map((r) => ({ cytokine: r.cytokine, "cell NES": r.NES_cell.toFixed(2), "cell q": fq(r.q_cell),
+    "donor g": r.g_donor.toFixed(2), "donor p": fq(r.score_p), "donor q": fq(r.q_donor_score), donors: `${r.n_test} vs ${r.n_ref}`,
+    "same direction": Math.sign(r.NES_cell) === Math.sign(r.g_donor) ? "yes" : "no" })), true);
 }
 
 // ── navigation, hash, theme ───────────────────────────────────────────────
@@ -686,6 +789,7 @@ function showTab(t) {
   $$(".tabs button[data-tab]").forEach((b) => b.classList.toggle("active", b.dataset.tab === t));
   $$(".tab").forEach((s) => s.classList.toggle("active", s.id === "tab-" + t));
   if (t === "results" || t === "about") initResults().then(resizeCharts).catch(console.error);
+  if (t === "chcell") initChCell().then(resizeCharts).catch(console.error);
   if (t === "compare") resizeCharts();
   if (t === "explore") for (const v of V) v.plot.set({ width: "auto", height: "auto" });
   if (S.atlas) writeHash();
