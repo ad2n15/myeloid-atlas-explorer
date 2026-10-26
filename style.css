@@ -125,3 +125,4 @@ th { color: var(--ink2); font-weight: 600; }
   .chart { height: 360px; } .chart.tall { height: 520px; }
   #tab-compare, #tab-results, #tab-chcell, #tab-about { height: auto; padding: 10px; }
 }
+.row label[hidden], .controls label[hidden] { display: none; }

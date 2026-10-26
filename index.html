@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Myeloid Atlas Explorer</title>
 <meta name="description" content="Interactive explorer of curated bone-marrow (BM25) and blood (PBMC4) single-cell atlases of clonal haematopoiesis and myeloid neoplasms: genes, cytokine responses, cell types and donor-level results.">
-<link rel="stylesheet" href="style.css?v=1793010442">
+<link rel="stylesheet" href="style.css?v=1793011063">
 <script src="https://cdn.jsdelivr.net/npm/plotly.js-dist-min@2.35.2/plotly.min.js" defer></script>
 </head>
 <body>
@@ -209,10 +209,15 @@
     <div id="c-bar" class="chart"></div>
   </div>
   <div class="card">
-    <h2>Forest plot: one cytokine across cell types</h2>
+    <h2>Forest plot</h2>
     <p class="muted">Left: cell-level NES for all donors, women and men (filled = q &lt; 0.05). GSEA gives no confidence interval, so points have no
-    error bars. Right: the donor-level effect (Hedges' g, 95% CI) for the same cytokine and cell type, all donors.</p>
-    <div class="row"><label>Cytokine <select id="c-cyto"></select></label></div>
+    error bars. Right: the donor-level effect (Hedges' g, 95% CI; blue = q &lt; 0.1), all donors. Uses the signature threshold chosen above.</p>
+    <div class="row">
+      <label>Comparison <select id="f-con"><option value="CH_TET2 vs healthy">TET2 carriers vs healthy</option><option value="CH_DNMT3A vs healthy">DNMT3A carriers vs healthy</option></select></label>
+      <label>Rows <select id="f-mode"><option value="cyto">cytokines, in one cell type</option><option value="ct">cell types, for one cytokine</option></select></label>
+      <label id="f-ct-wrap">Cell type <select id="f-ct"></select></label>
+      <label id="f-cyto-wrap" hidden>Cytokine <select id="c-cyto"></select></label>
+    </div>
     <div id="c-forest" class="chart"></div>
   </div>
   <div class="card">
@@ -266,6 +271,6 @@
 </section>
 </main>
 
-<script type="module" src="app.js?v=1793010442"></script>
+<script type="module" src="app.js?v=1793011063"></script>
 </body>
 </html>

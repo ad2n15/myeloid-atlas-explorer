@@ -688,6 +688,7 @@ async function buildChCell() {
   const cts = [...new Set(cell.map((r) => r.celltype))].sort();
   $("#c-ct").innerHTML = cts.map((c) => `<option value="${c}">${ctName(c)}</option>`).join("");
   $("#c-ct").value = cts.includes("CD8_Memory_T_cell") ? "CD8_Memory_T_cell" : cts[0];
+  $("#f-ct").innerHTML = $("#c-ct").innerHTML; $("#f-ct").value = $("#c-ct").value;
   const all = () => { safeCh("#c-heat", drawChHeat); safeCh("#c-bar", drawChBars); safeCh("#c-cmp", drawChCompare); updCyto(); };
   const updCyto = () => {
     const cur = $("#c-cyto").value, cys = [...new Set(chRows().map((r) => r.cytokine))].sort();
@@ -696,7 +697,14 @@ async function buildChCell() {
     safeCh("#c-forest", drawChForest);
   };
   ["#c-con", "#c-sex", "#c-lfc", "#c-sig", "#c-ct"].forEach((s) => ($(s).onchange = all));
-  $("#c-cyto").onchange = () => safeCh("#c-forest", drawChForest);
+  $("#c-con").addEventListener("change", () => { $("#f-con").value = $("#c-con").value; });   // the two comparison menus stay in step
+  $("#f-con").onchange = () => { $("#c-con").value = $("#f-con").value; all(); };
+  $("#f-mode").onchange = () => {
+    const ct = $("#f-mode").value === "cyto";
+    $("#f-ct-wrap").hidden = !ct; $("#f-cyto-wrap").hidden = ct;
+    safeCh("#c-forest", drawChForest);
+  };
+  ["#c-cyto", "#f-ct"].forEach((s) => ($(s).onchange = () => safeCh("#c-forest", drawChForest)));
   all();
 }
 function safeCh(sel, fn) { try { fn(); } catch (e) { console.error(e); $(sel).innerHTML = `<p class="error">Could not draw this section: ${esc(e.message)}</p>`; } }
@@ -764,6 +772,7 @@ function drawChBars() {
 }
 
 function drawChForest() {
+  if ($("#f-mode").value === "cyto") return drawChForestCyto();
   const cy = $("#c-cyto").value, con = $("#c-con").value, lfc = +$("#c-lfc").value;
   const sexes = [["all", "all donors", "circle"], ["women", "women", "triangle-up"], ["men", "men", "square"]];
   const by = Object.fromEntries(sexes.map(([s]) => [s, new Map(chRows(s).filter((r) => r.cytokine === cy).map((r) => [r.celltype, r]))]));
@@ -785,6 +794,34 @@ function drawChForest() {
     xaxis: { domain: [0, 0.47], title: `${cy}: cell-level NES`, zeroline: true },
     xaxis2: { domain: [0.53, 1], title: `${cy}: donor-level Hedges' g (95% CI)`, zeroline: true, anchor: "y" },
     yaxis: { autorange: "reversed", automargin: true }, legend: { orientation: "h", y: -0.2 }, margin: { l: 150, r: 20, t: 10, b: 80 } });
+}
+
+// forest plot with cytokines as rows (as in Results: donor level), for one comparison and cell type
+function drawChForestCyto() {
+  const ct = $("#f-ct").value, con = $("#c-con").value, lfc = +$("#c-lfc").value;
+  const sexes = [["all", "all donors", "circle"], ["women", "women", "triangle-up"], ["men", "men", "square"]];
+  const by = Object.fromEntries(sexes.map(([s]) => [s, new Map(chRows(s).filter((r) => r.celltype === ct).map((r) => [r.cytokine, r]))]));
+  const mod = moduleOf(ct);
+  const cys = [...new Set(Object.values(by).flatMap((m) => [...m.keys()]))]
+    .sort((a, b) => mod.rank(a) - mod.rank(b) || (by.all.get(b)?.NES ?? -9) - (by.all.get(a)?.NES ?? -9));
+  if (!cys.length) { $("#c-forest").innerHTML = `<p class="muted">No cell-level tests for ${esc(ctName(ct))} in this comparison.</p>`; return; }
+  const y = cys.map((c) => `${c} · ${mod.get(c)}`);
+  const traces = sexes.map(([s, name, sym]) => {
+    const rs = cys.map((c) => by[s].get(c));
+    return { type: "scatter", mode: "markers", name, xaxis: "x", y, x: rs.map((r) => r?.NES ?? null),
+      marker: { symbol: rs.map((r) => (r && r.q < 0.05 ? sym : sym + "-open")), size: 10, color: s === "all" ? css("--accent") : s === "women" ? "#eb6834" : "#6250d6" },
+      hovertext: rs.map((r, i) => (r ? `${cys[i]} · ${name}: NES ${r.NES.toFixed(2)}, q ${fq(r.q)} (${r.n_cells_test} vs ${r.n_cells_ref} cells)` : "")), hoverinfo: "text" };
+  });
+  const d = cys.map((c) => S.ch.conc.find((r) => r.contrast === con && Math.abs(r.lfc - lfc) < 1e-6 && r.celltype === ct && r.cytokine === c && r.g_donor != null));
+  traces.push({ type: "scatter", mode: "markers", name: "donor level (g, 95% CI)", xaxis: "x2", y, x: d.map((r) => r?.g_donor ?? null),
+    error_x: { type: "data", symmetric: false, array: d.map((r) => (r && r.ci_high != null ? r.ci_high - r.g_donor : null)),
+      arrayminus: d.map((r) => (r && r.ci_low != null ? r.g_donor - r.ci_low : null)), color: css("--muted") },
+    marker: { symbol: "diamond", size: 11, color: d.map((r) => (r && r.q_donor_score < 0.1 ? css("--accent") : css("--ink2"))) },
+    hovertext: d.map((r, i) => (r ? `${cys[i]} · donor level: g ${r.g_donor.toFixed(2)} [${r.ci_low?.toFixed(2)}, ${r.ci_high?.toFixed(2)}], q ${fq(r.q_donor_score)} (${r.n_test} vs ${r.n_ref} donors)` : "no donor-level test")), hoverinfo: "text" });
+  P("c-forest", traces, { height: Math.max(340, 26 * cys.length + 130), grid: { rows: 1, columns: 2 },
+    xaxis: { domain: [0, 0.47], title: `${ctName(ct)}: cell-level NES`, zeroline: true },
+    xaxis2: { domain: [0.53, 1], title: `${ctName(ct)}: donor-level Hedges' g (95% CI)`, zeroline: true, anchor: "y" },
+    yaxis: { autorange: "reversed", automargin: true, tickfont: { size: 10 } }, legend: { orientation: "h", y: -0.12 }, margin: { l: 220, r: 20, t: 10, b: 80 } });
 }
 
 function drawChCompare() {
