@@ -156,7 +156,7 @@ function makeView(id) {
     titleEl: document.getElementById(id === "mapA" ? "legend-title" : "legend-titleB"),
     ctl: id === "mapA" ? { colour: $("#colour"), gene: $("#gene"), cytokine: $("#cytokine"), module: $("#module") }
       : { colour: $("#colourB"), gene: $("#geneB"), cytokine: $("#cytokineB"), module: $("#moduleB") },
-    colour: { type: "field", key: "level2" }, isolate: null, order: null, on: id === "mapA", mouse: { x: 0, y: 0 } };
+    colour: { type: "field", key: "level1" }, isolate: null, order: null, on: id === "mapA", mouse: { x: 0, y: 0 } };
   v.plot = createScatterplot({ canvas: v.canvas, width: "auto", height: "auto", pointSize: 2.5, backgroundColor: css("--plot-bg"),
     lassoColor: css("--accent"), pointColorHover: css("--ink"), opacityInactiveScale: 0.15, lassoOnLongPress: true });
   v.plot.subscribe("pointOver", (i) => tooltip(v, i));
@@ -616,7 +616,6 @@ async function buildResults() {
     const rows = R.studies.map((r) => Object.fromEntries(keep.map((k) => [label[k] || k, k === "donors_by_condition" ? groupName(String(r[k] ?? "")) : r[k]])));
     table($("#studies"), rows); table($("#about-studies"), rows);
   });
-  $("#figures").innerHTML = [1, 2, 3, 4, 5, 6].map((k) => `<a href="data/results/figures/fig${k}.png" target="_blank"><img loading="lazy" src="data/results/figures/fig${k}.png" alt="Figure ${k}"><span>Figure ${k}</span></a>`).join("");
 }
 
 function drawResults() {
@@ -678,7 +677,7 @@ function table(el, rows) {
 const spec = (v) => `${v.colour.type}:${v.colour.key}`;
 function writeHash() {
   const p = new URLSearchParams({ atlas: S.atlas, tab: $(".tabs .active")?.dataset.tab || "explore", c: spec(V[0]), emb: S.emb });
-  if (V[1].on) { p.set("split", "1"); p.set("c2", spec(V[1])); }
+  if (V[1].on) p.set("c2", spec(V[1])); else p.set("split", "0");     // split view is the default
   history.replaceState(null, "", "#" + p.toString());
 }
 function readHash() { return new URLSearchParams(location.hash.slice(1)); }
@@ -702,7 +701,7 @@ async function switchAtlas(a, colourA, colourB) {
   $$(".atlas-switch button").forEach((b) => b.setAttribute("aria-checked", b.dataset.atlas === a));
   await loadAtlas(a);
   buildControls();
-  V[0].colour = validColour(colourA, { type: "field", key: "level2" });
+  V[0].colour = validColour(colourA, { type: "field", key: "level1" });
   V[1].colour = validColour(colourB, defaultB(a));
   for (const v of V) { v.isolate = null; syncControls(v); }
   $("#intro-touch").hidden = !matchMedia("(pointer: coarse)").matches;
@@ -762,7 +761,7 @@ async function main() {
 
   await switchAtlas(h.get("atlas") === "PBMC4" ? "PBMC4" : "BM25", h.get("c"), h.get("c2"));
   if (h.get("emb") && S.meta.l2umap[h.get("emb")]) { S.emb = h.get("emb"); $("#emb").value = S.emb; await drawAll(); for (const v of V.filter((w) => w.on)) fit(v); }
-  if (h.get("split") === "1") await setSplit(true);
+  if (h.get("split") !== "0") await setSplit(true);
   showTab(h.get("tab") || "explore");
 }
 

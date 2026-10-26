@@ -9,7 +9,7 @@ and myeloid neoplasms: **BM25** (bone marrow / CD34⁺ progenitors, 25 studies) 
   (huCIRA Human Cytokine Dictionary signatures).
 - Compare genes across cell groups (dot plots, distributions) and check label agreement.
 - Browse the donor-level results (meta-analysis of cytokine-response signatures, response modules,
-  cell-type composition) and the manuscript figures.
+  cell-type composition).
 
 Each atlas is shown as a stratified subsample of cells (every curated cell type × study kept;
 rare types kept whole). Data come from public GEO and CELLxGENE studies listed in the app's
@@ -24,5 +24,5 @@ Libraries: regl-scatterplot 1.14.1, Plotly.js 2.35.2 (loaded from CDNs).
 ## Licence
 
 - **Code** (`index.html`, `app.js`, `style.css`, `tools/`): MIT licence, see `LICENSE`.
-- **Data and figures** (`data/`): CC BY 4.0, see `LICENSE-DATA.md`. Please cite the original
+- **Data** (`data/`): CC BY 4.0, see `LICENSE-DATA.md`. Please cite the original
   studies (accessions in the About tab) and the accompanying manuscript.

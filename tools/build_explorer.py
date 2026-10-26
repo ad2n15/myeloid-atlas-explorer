@@ -447,10 +447,6 @@ def build_results() -> None:
     dump("studies", rd("docs/data_collection/atlas_studies.tsv"), list(rd("docs/data_collection/atlas_studies.tsv").columns))
     dump("modules", rd("docs/phase1/response_modules.tsv"), ["celltype", "cytokine", "module", "n_genes",
                                                              "frac_ifn_shared", "frac_cell_cycle"])
-    figs = out / "figures"
-    figs.mkdir(exist_ok=True)
-    for k in range(1, 7):
-        shutil.copy(REPO / f"docs/paper/figures/fig{k}.png", figs / f"fig{k}.png")
     print(f"wrote {out}")
 
 

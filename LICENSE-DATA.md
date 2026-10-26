@@ -1,7 +1,7 @@
 # Data licence
 
 The files in `data/` (cell subsamples, embeddings, labels, gene-expression values,
-per-cell scores, donor-level result tables and figures) are derived from public
+per-cell scores, donor-level result tables) are derived from public
 single-cell studies and are released under the
 **Creative Commons Attribution 4.0 International licence (CC BY 4.0)**,
 https://creativecommons.org/licenses/by/4.0/.
