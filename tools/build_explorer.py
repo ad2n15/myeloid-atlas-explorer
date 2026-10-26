@@ -46,6 +46,7 @@ sys.path.insert(0, str(REPO / "scripts"))
 
 from annotate_level1 import atlas_h5ad  # noqa: E402
 from pseudobulk_aggregate import cell_unit_keys, map_unit_keys  # noqa: E402
+from response_modules import GROUP_LABEL, module_order, pretty, read_groups  # noqa: E402
 
 OUT = REPO / "explorer/site/data"
 GMT = REPO / "metadata/hucira_signatures/hcd_up_p0.01_lfc1.gmt"
@@ -100,6 +101,22 @@ CATEGORICAL = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#6250d6", "#e87ba4",
 
 
 # ── helpers ──────────────────────────────────────────────────────────────────
+def read_modules() -> pd.DataFrame:
+    """Response modules (docs/phase1/response_modules.tsv) with their display rank (consensus-group order,
+    response_modules.module_order) and whether the module is one of the huCIRA highly similar groups."""
+    mods = pd.read_csv(REPO / "docs/phase1/response_modules.tsv", sep="\t")
+    rank = {m: i for i, m in enumerate(module_order(mods))}
+    return mods.assign(module_rank=mods["module"].map(rank),
+                       module_grouped=mods["module"].isin(set(GROUP_LABEL.values())))
+
+
+def module_of(cytokines: pd.Series) -> pd.Series:
+    """Module of a cytokine by the fixed rule (same in every cell type): its highly similar group, else itself."""
+    hs = read_groups()["highly_similar_group"].reindex(cytokines.values)
+    return pd.Series([GROUP_LABEL[int(g)] if pd.notna(g) else pretty(c) for c, g in zip(cytokines, hs)],
+                     index=cytokines.index)
+
+
 def read_gmt(path: Path) -> dict[str, list[str]]:
     out = {}
     for line in path.read_text().splitlines():
@@ -371,7 +388,8 @@ def build_atlas(atlas: str, n_cells: int) -> None:
     # per-cell cytokine-response scores
     mapping = yaml.safe_load((REPO / "metadata/celltype_mapping/hucira_level2.yaml").read_text())["celltype_mapping"]
     gmt = read_gmt(GMT)
-    mods = pd.read_csv(REPO / "docs/phase1/response_modules.tsv", sep="\t")
+    mods = read_modules()
+    mod_rank = mods.drop_duplicates("module").set_index("module")["module_rank"]
     mean = np.asarray(X.mean(axis=0)).ravel()
     expressed = mean > 0
     ranks = pd.Series(mean[expressed]).rank(method="first").values
@@ -398,9 +416,9 @@ def build_atlas(atlas: str, n_cells: int) -> None:
             if len(gi) >= 5:
                 modules.setdefault(mod, {})[ct] = (cells, module_score(Xc, gi, bins, rng, cells))
 
-    def put_scores(kind, table):
+    def put_scores(kind, table, order=None):
         lst = []
-        for name, per_ct in sorted(table.items()):
+        for name, per_ct in sorted(table.items(), key=lambda kv: (order(kv[0]) if order else 0, kv[0])):
             z = np.full(n, -127, np.int8)
             for ct, (cells, s) in per_ct.items():
                 sd = s.std() or 1.0
@@ -410,7 +428,9 @@ def build_atlas(atlas: str, n_cells: int) -> None:
             lst.append({"name": name, "file": fn, "celltypes": sorted(per_ct)})
         return lst
     meta["cytokine_scores"] = put_scores("cytokine", cytokines)
-    meta["module_scores"] = put_scores("module", modules)
+    # modules in display order (consensus groups); "grouped" = one of the huCIRA highly similar groups
+    meta["module_scores"] = [dict(r, grouped=r["name"] in GROUP_LABEL.values()) for r in
+                             put_scores("module", modules, lambda m: int(mod_rank.get(m, 999)))]
     meta["score_scale"] = 25        # int8 / 25 = z within cell type; -127 = not scored
     meta["dictionary_celltypes"] = sorted({ct for v in cytokines.values() for ct in v})
     meta["level2_to_dictionary"] = {k: v for k, v in mapping.items() if k in set(l2)}
@@ -439,14 +459,16 @@ def build_results() -> None:
     dump("study_effects", rd("docs/phase1/study_effects_main.tsv"),
          ["group", "celltype", "cytokine", "study", "condition", "timepoint", "n_test", "n_ref", "effect", "se",
           "score_p"])
-    dump("module_meta", rd("docs/phase2/modules/module_meta.tsv"),
-         ["group", "celltype", "module", "k", "studies", "n_test", "n_ref", "effect", "ci_low", "ci_high", "p", "q"])
+    mods = read_modules()
+    ranks = mods.drop_duplicates("module")[["module", "module_rank", "module_grouped"]]
+    dump("module_meta", rd("docs/phase2/modules/module_meta.tsv").merge(ranks, on="module", how="left"),
+         ["group", "celltype", "module", "module_rank", "module_grouped", "k", "studies", "n_test", "n_ref", "effect", "ci_low", "ci_high", "p", "q"])
     dump("propeller", rd("docs/phase2/composition/propeller.tsv"),
          ["contrast", "compartment", "study", "condition", "celltype", "prop_test", "prop_ref", "log2_ratio", "p",
           "q", "n_test", "n_ref"])
     dump("studies", rd("docs/data_collection/atlas_studies.tsv"), list(rd("docs/data_collection/atlas_studies.tsv").columns))
-    dump("modules", rd("docs/phase1/response_modules.tsv"), ["celltype", "cytokine", "module", "n_genes",
-                                                             "frac_ifn_shared", "frac_cell_cycle"])
+    dump("modules", mods, ["celltype", "cytokine", "module", "module_rank", "module_grouped", "n_genes",
+                           "frac_ifn_shared", "frac_cell_cycle"])
     build_ch_cell(out)
     print(f"wrote {out}")
 
@@ -454,10 +476,12 @@ def build_results() -> None:
 def build_ch_cell(out: Path) -> None:
     """Original cell-level huCIRA results for the Heimlich 2024 CH cohort, and their donor-level counterparts.
 
-    Cytokines are labelled with the project's data-driven response modules (docs/phase1/response_modules.tsv),
-    which are cell-type specific; signatures without a module in that cell type are "unassigned".
+    Cytokines are labelled with the project's response modules (docs/phase1/response_modules.tsv): the huCIRA
+    paper's highly similar cytokine groups (Supplementary Table 11), fixed across cell types, other cytokines
+    singly. A signature not in that table (e.g. too few genes for the donor-level tests) gets its module by the
+    same fixed rule. module_rank is the display order (response_modules.module_order).
     """
-    mods = pd.read_csv(REPO / "docs/phase1/response_modules.tsv", sep="\t")[["celltype", "cytokine", "module"]]
+    mods = read_modules()[["celltype", "cytokine", "module"]]
     runs = {"all": REPO / "results/hucira_pbmc4_gse/CXG_HEIMLICH_2024",
             "women": REPO / "results/hucira_pbmc4_gse_by_sex/female/CXG_HEIMLICH_2024",
             "men": REPO / "results/hucira_pbmc4_gse_by_sex/male/CXG_HEIMLICH_2024"}
@@ -477,7 +501,10 @@ def build_ch_cell(out: Path) -> None:
     # the original tables hold repeated runs of some tests; keep the first, as in hucira_concordance.read_original
     cell = cell.drop_duplicates(["contrast", "sex", "lfc", "celltype", "cytokine"])
     cell = cell.merge(mods, on=["celltype", "cytokine"], how="left")
-    cell["module"] = cell["module"].fillna("unassigned").str.replace("other: ", "", regex=False)
+    cell["module"] = cell["module"].fillna(module_of(cell["cytokine"]))
+    rank = {m: i for i, m in enumerate(module_order(cell[["cytokine", "module"]].drop_duplicates()))}
+    cell["module_rank"] = cell["module"].map(rank)
+    cell["module_grouped"] = cell["module"].isin(set(GROUP_LABEL.values()))
     dump_table(out / "ch_cell.json", cell, rnd=6)
     conc = []
     for name, lfc in (("main", 1.0), ("lfc0.8", 0.8)):

@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Myeloid Atlas Explorer</title>
 <meta name="description" content="Interactive explorer of curated bone-marrow (BM25) and blood (PBMC4) single-cell atlases of clonal haematopoiesis and myeloid neoplasms: genes, cytokine responses, cell types and donor-level results.">
-<link rel="stylesheet" href="style.css?v=1793011063">
+<link rel="stylesheet" href="style.css?v=1793025223">
 <script src="https://cdn.jsdelivr.net/npm/plotly.js-dist-min@2.35.2/plotly.min.js" defer></script>
 </head>
 <body>
@@ -58,7 +58,7 @@
     <label><span>Cytokine response <span class="hint" title="How strongly each cell shows the genes that its cell type switches on after this cytokine (huCIRA signatures), relative to other cells of the same type. Descriptive only: the paper's tests are made on donors, not cells.">?</span></span>
       <select id="cytokine"><option value="">— choose —</option></select>
     </label>
-    <label><span>Response module <span class="hint" title="Groups of cytokine signatures that share genes (e.g. Interferon response, IL-1β response). Score per cell, relative to other cells of the same type.">?</span></span>
+    <label><span>Response module <span class="hint" title="The huCIRA paper's groups of highly similar cytokine responses (e.g. Interferon response: IL-12, IFN-α1/β/ω/γ; γc cytokines: IL-2, IL-7, IL-15), the same in every cell type; other cytokines are shown singly. Score per cell, relative to other cells of the same type.">?</span></span>
       <select id="module"><option value="">— choose —</option></select>
     </label>
     <details class="filters" open>
@@ -190,13 +190,14 @@
   <div class="card">
     <h2>Cytokine responses by cell type (cell level)</h2>
     <p class="muted">NES (normalised enrichment score): &gt; 0 = signature genes are higher in carriers' cells, &lt; 0 = lower. • = FDR q &lt; 0.05.
-    Rows are grouped by the project's <b>response modules</b> (cytokine signatures from the huCIRA dictionary that share genes), which differ
-    between cell types — choose the cell type whose modules define the grouping. Click a square to list its leading genes.</p>
+    Rows are ordered by the project's <b>response modules</b>: the huCIRA paper's groups of highly similar cytokines (Oesinghaus et al. 2025,
+    Supplementary Table 11; e.g. Interferon response, γc cytokines, type 2), the same in every cell type (grouped rows show the group after the
+    cytokine); other cytokines are listed singly. The cell type chosen is shown in bold and used for the charts below. Click a square to list its leading genes.</p>
     <div class="row">
       <label>Comparison <select id="c-con"><option value="CH_TET2 vs healthy">TET2 carriers vs healthy</option><option value="CH_DNMT3A vs healthy">DNMT3A carriers vs healthy</option></select></label>
       <label>Donors <select id="c-sex"><option value="all">all</option><option value="women">women only</option><option value="men">men only</option></select></label>
       <label>Signature genes <select id="c-lfc"><option value="1">log fold change ≥ 1 (main)</option><option value="0.8">log fold change ≥ 0.8</option></select></label>
-      <label>Group rows by modules of <select id="c-ct"></select></label>
+      <label>Cell type <select id="c-ct"></select></label>
       <label><input type="checkbox" id="c-sig"> only q &lt; 0.05</label>
     </div>
     <p class="muted" id="c-cells"></p>
@@ -205,7 +206,7 @@
   </div>
   <div class="card">
     <h2 id="c-bar-title">One cell type</h2>
-    <p class="muted">Same comparison, the cell type chosen above; bars coloured by response module, faded = q ≥ 0.05.</p>
+    <p class="muted">Same comparison, the cell type chosen above; bars coloured by huCIRA highly similar cytokine group (grey = single cytokines), faded = q ≥ 0.05.</p>
     <div id="c-bar" class="chart"></div>
   </div>
   <div class="card">
@@ -248,6 +249,10 @@
     <li><b>CellTypist</b> labels (four reference models) and <b>author labels</b> are shown for comparison.</li>
     <li><b>Gene expression</b> is shown on a log scale (log1p of counts per 10,000; 0 = not detected), quantised to 256 levels. Only a panel of genes is included: marker genes, all genes of the cytokine signatures, cytokine ligands and receptors, and highly variable genes.</li>
     <li><b>Cytokine responses</b> use the Human Cytokine Dictionary (huCIRA) signatures: genes that a given cell type switches on after a given cytokine. For each cell whose type has signatures, the score is the average expression of the signature genes minus that of matched control genes, standardised within the cell type. Grey cells have no signature for that cytokine.</li>
+    <li><b>Response modules</b> follow the huCIRA paper's groups of highly similar cytokines (Oesinghaus et al. 2025, Supplementary Table 11):
+    Interferon response (IL-12, IFN-α1, IFN-β, IFN-ω, IFN-γ), γc cytokines (IL-2, IL-7, IL-15), type 2 (IL-4, IL-13) and OSM/IL-17C/IGF-1.
+    The groups are fixed across cell types and a module is scored from whichever members have a signature in that cell type; every other
+    cytokine is shown singly. Modules are listed in the order of the paper's broader consensus groups (Supplementary Table 10).</li>
   </ul>
   <h3>Important caveats</h3>
   <ul>
@@ -271,6 +276,6 @@
 </section>
 </main>
 
-<script type="module" src="app.js?v=1793011063"></script>
+<script type="module" src="app.js?v=1793025223"></script>
 </body>
 </html>

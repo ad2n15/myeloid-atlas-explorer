@@ -199,8 +199,8 @@ async function currentValues(view) {
     return { kind: "num", v, label: f.label, seq: true };
   }
   if (c.type === "gene") return { kind: "num", v: await gene(c.key), label: `${c.key} expression`, seq: true, gene: true };
-  const name = /response$/.test(c.key) ? c.key : `${c.key} response`;
-  return { kind: "num", v: await score(c.type, c.key), label: `${name.replace("other: ", "")} (vs same cell type)`, seq: false };
+  const name = /response$/.test(c.key) ? c.key : `${c.key.replace(/ cytokines$/, " cytokine")} response`;
+  return { kind: "num", v: await score(c.type, c.key), label: `${name} (vs same cell type)`, seq: false };
 }
 
 const drawAll = () => Promise.all(V.filter((v) => v.on).map(draw));
@@ -380,8 +380,13 @@ function buildControls() {
     `<optgroup label="${g}">${groups[g].map((f) => `<option value="${f.id}">${esc(f.label)}</option>`).join("")}</optgroup>`).join("");
   const cytoOpts = `<option value="">— choose —</option>` + S.meta.cytokine_scores.map((r) =>
     `<option value="${esc(r.name)}">${esc(r.name)} (${r.celltypes.length} cell type${r.celltypes.length > 1 ? "s" : ""})</option>`).join("");
-  const modOpts = `<option value="">— choose —</option>` + S.meta.module_scores.map((r) =>
-    `<option value="${esc(r.name)}">${esc(r.name.replace("other: ", ""))}</option>`).join("");
+  // module_scores come in display order; huCIRA highly similar groups first, single cytokines after
+  const modOpt = (r) => `<option value="${esc(r.name)}">${esc(r.name)}</option>`;
+  const ms = S.meta.module_scores, grouped = ms.filter((r) => r.grouped), single = ms.filter((r) => !r.grouped);
+  const modOpts = `<option value="">— choose —</option>` + (grouped.length && single.length
+    ? `<optgroup label="Highly similar cytokine groups">${grouped.map(modOpt).join("")}</optgroup>` +
+      `<optgroup label="Single cytokines">${single.map(modOpt).join("")}</optgroup>`
+    : ms.map(modOpt).join(""));
   for (const v of V) {
     const ph = (html, text) => (v.id === "mapB" ? html.replace("— choose —", text) : html);
     v.ctl.colour.innerHTML = ph(colourOpts, "Colour by…"); v.ctl.cytokine.innerHTML = ph(cytoOpts, "Cytokine response…");
@@ -646,11 +651,13 @@ function drawForest() {
 
 function drawModules() {
   const R = S.results, ct = $("#m-ct").value, rows = R.module_meta.filter((r) => r.celltype === ct);
-  const mods = [...new Set(rows.map((r) => r.module))], groups = [...new Set(rows.map((r) => r.group))].sort();
+  const rank = new Map(rows.map((r) => [r.module, r.module_rank ?? 999]));
+  const mods = [...rank.keys()].sort((a, b) => rank.get(a) - rank.get(b) || a.localeCompare(b));
+  const groups = [...new Set(rows.map((r) => r.group))].sort();
   const get = (m, g) => rows.find((r) => r.module === m && r.group === g);
   const z = mods.map((m) => groups.map((g) => get(m, g)?.effect ?? null));
   const text = mods.map((m) => groups.map((g) => { const r = get(m, g); return r ? `${r.effect.toFixed(2)}${r.q < 0.1 ? " *" : ""}` : ""; }));
-  P("m-heat", [{ type: "heatmap", z, x: groups.map(groupName), y: mods.map((m) => m.replace("other: ", "")), text, texttemplate: "%{text}",
+  P("m-heat", [{ type: "heatmap", z, x: groups.map(groupName), y: mods, text, texttemplate: "%{text}",
     colorscale: DIV.map((c, i) => [i / (DIV.length - 1), c]), zmid: 0, zmin: -3, zmax: 3,
     hovertemplate: "%{y} · %{x}: g %{z:.2f}<extra></extra>", colorbar: { title: { text: "g" }, thickness: 10 } }],
   { height: Math.max(320, 34 * mods.length + 160), xaxis: { tickangle: -40, automargin: true }, yaxis: { automargin: true },
@@ -713,12 +720,14 @@ function chRows(sex) {
   const con = $("#c-con").value, lfc = +$("#c-lfc").value, sx = sex || $("#c-sex").value;
   return S.ch.cell.filter((r) => r.contrast === con && r.sex === sx && Math.abs(r.lfc - lfc) < 1e-6);
 }
-// module of each cytokine in the reference cell type, in display order (interferon first, unassigned last)
+// response module of each cytokine (huCIRA highly similar groups, fixed across cell types; other cytokines singly),
+// in display order (module_rank: consensus groups). label(c) names the group only for grouped cytokines.
 function moduleOf(ct) {
-  const m = new Map(S.ch.cell.filter((r) => r.celltype === ct).map((r) => [r.cytokine, r.module]));
-  const order = [...new Set(m.values())].sort((a, b) => (a === "Interferon response" ? -1 : b === "Interferon response" ? 1 :
-    a === "unassigned" ? 1 : b === "unassigned" ? -1 : a.localeCompare(b)));
-  return { get: (c) => m.get(c) || "unassigned", rank: (c) => { const i = order.indexOf(m.get(c) || "unassigned"); return i < 0 ? order.length : i; } };
+  const rows = S.ch.cell.filter((r) => r.celltype === ct), all = new Map(S.ch.cell.map((r) => [r.cytokine, r]));
+  const m = new Map(rows.map((r) => [r.cytokine, r]));
+  const rec = (c) => m.get(c) || all.get(c);
+  return { rank: (c) => rec(c)?.module_rank ?? 999,
+    label: (c) => (rec(c)?.module_grouped ? `${c}  ·  ${rec(c).module}` : c) };
 }
 
 function drawChHeat() {
@@ -738,9 +747,9 @@ function drawChHeat() {
   const text = cyt.map((c) => cts.map((t) => { const r = idx.get(key(c, t)); return r && r.q < 0.05 ? "•" : ""; }));
   const hover = cyt.map((c) => cts.map((t) => {
     const r = idx.get(key(c, t)); if (!r) return "not tested";
-    return `${c} in ${ctName(t)} (module there: ${r.module})<br>NES ${r.NES.toFixed(2)}, q ${fq(r.q)}<br>${r.n_cells_test} vs ${r.n_cells_ref} cells`;
+    return `${c} in ${ctName(t)} (module: ${r.module_grouped ? r.module : "single cytokine"})<br>NES ${r.NES.toFixed(2)}, q ${fq(r.q)}<br>${r.n_cells_test} vs ${r.n_cells_ref} cells`;
   }));
-  const ylab = cyt.map((c) => `${c}  ·  ${mod.get(c)}`);
+  const ylab = cyt.map((c) => mod.label(c));
   P("c-heat", [{ type: "heatmap", z, x: cts.map((t) => (t === ref ? `<b>${ctName(t)}</b>` : ctName(t))), y: ylab, text, texttemplate: "%{text}",
     textfont: { size: 14, color: "#111" }, hovertext: hover, hoverinfo: "text", colorscale: DIV.map((c, i) => [i / (DIV.length - 1), c]),
     zmid: 0, zmin: -3.5, zmax: 3.5, colorbar: { title: { text: "NES" }, thickness: 10 }, xgap: 1, ygap: 1 }],
@@ -751,7 +760,7 @@ function drawChHeat() {
   el.on?.("plotly_click", (ev) => {
     const pt = ev.points[0], r = idx.get(key(cyt[pt.pointNumber[0]], cts[pt.pointNumber[1]]));
     if (!r) return;
-    $("#c-genes").innerHTML = `<p style="font-size:12.5px"><b>${esc(r.cytokine)} in ${esc(ctName(r.celltype))}</b> (module: ${esc(r.module)}) — NES ${r.NES.toFixed(2)}, q ${fq(r.q)};
+    $("#c-genes").innerHTML = `<p style="font-size:12.5px"><b>${esc(r.cytokine)} in ${esc(ctName(r.celltype))}</b> (module: ${esc(r.module_grouped ? r.module : "single cytokine")}) — NES ${r.NES.toFixed(2)}, q ${fq(r.q)};
       ${r.n_genes} signature genes; leading genes (first 25): ${esc(r.lead.split(";").join(", ") || "none")}</p>`;
   });
 }
@@ -759,13 +768,16 @@ function drawChHeat() {
 function drawChBars() {
   const ct = $("#c-ct").value, rows = chRows().filter((r) => r.celltype === ct).sort((a, b) => a.NES - b.NES);
   $("#c-bar-title").textContent = `One cell type: ${ctName(ct)}`;
-  const mods = [...new Set(rows.map((r) => r.module))];
-  const colour = (m) => (m === "unassigned" ? GREY : DISTINCT[mods.filter((x) => x !== "unassigned").indexOf(m) % DISTINCT.length]);
+  // one colour per huCIRA highly similar group; every other cytokine (its own module) in neutral grey
+  const SINGLE = "single cytokines", key = (r) => (r.module_grouped ? r.module : SINGLE);
+  const rank = new Map(rows.map((r) => [key(r), r.module_grouped ? r.module_rank : 999]));
+  const mods = [...rank.keys()].sort((a, b) => rank.get(a) - rank.get(b));
+  const colour = (m) => (m === SINGLE ? css("--muted") : DISTINCT[mods.indexOf(m) % DISTINCT.length]);
   P("c-bar", mods.map((m) => {
-    const rs = rows.filter((r) => r.module === m);
+    const rs = rows.filter((r) => key(r) === m);
     return { type: "bar", orientation: "h", name: m, y: rs.map((r) => r.cytokine), x: rs.map((r) => r.NES),
       marker: { color: colour(m), opacity: rs.map((r) => (r.q < 0.05 ? 1 : 0.35)) },
-      hovertext: rs.map((r) => `${r.cytokine} (${m}): NES ${r.NES.toFixed(2)}, q ${fq(r.q)}`), hoverinfo: "text" };
+      hovertext: rs.map((r) => `${r.cytokine}${r.module_grouped ? ` (${r.module})` : ""}: NES ${r.NES.toFixed(2)}, q ${fq(r.q)}`), hoverinfo: "text" };
   }), { height: Math.max(340, 17 * rows.length + 120), barmode: "overlay", showlegend: true, legend: { title: { text: "response module: " }, orientation: "h", y: -0.18 },
     xaxis: { title: `NES in ${ctName(ct)}`, zeroline: true },
     yaxis: { categoryorder: "array", categoryarray: rows.map((r) => r.cytokine), automargin: true }, margin: { l: 110, r: 20, t: 10, b: 50 } });
@@ -805,7 +817,7 @@ function drawChForestCyto() {
   const cys = [...new Set(Object.values(by).flatMap((m) => [...m.keys()]))]
     .sort((a, b) => mod.rank(a) - mod.rank(b) || (by.all.get(b)?.NES ?? -9) - (by.all.get(a)?.NES ?? -9));
   if (!cys.length) { $("#c-forest").innerHTML = `<p class="muted">No cell-level tests for ${esc(ctName(ct))} in this comparison.</p>`; return; }
-  const y = cys.map((c) => `${c} · ${mod.get(c)}`);
+  const y = cys.map((c) => mod.label(c));
   const traces = sexes.map(([s, name, sym]) => {
     const rs = cys.map((c) => by[s].get(c));
     return { type: "scatter", mode: "markers", name, xaxis: "x", y, x: rs.map((r) => r?.NES ?? null),

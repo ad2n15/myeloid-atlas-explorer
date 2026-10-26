@@ -9,7 +9,9 @@ and myeloid neoplasms: **BM25** (bone marrow / CD34⁺ progenitors, 25 studies) 
   (huCIRA Human Cytokine Dictionary signatures).
 - Compare genes across cell groups (dot plots, distributions) and check label agreement.
 - Browse the donor-level results (meta-analysis of cytokine-response signatures, response modules,
-  cell-type composition).
+  cell-type composition). Response modules follow the huCIRA paper's highly similar cytokine groups
+  (Oesinghaus et al. 2025, Supplementary Table 11: Interferon response, γc cytokines, type 2,
+  OSM/IL-17C/IGF-1), fixed across cell types; other cytokines are shown singly.
 - Explore the original cell-level huCIRA analysis of the clonal haematopoiesis cohort (Heimlich 2024),
   side by side with its donor-level counterpart.
 
