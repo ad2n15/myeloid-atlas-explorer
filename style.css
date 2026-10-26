@@ -126,3 +126,5 @@ th { color: var(--ink2); font-weight: 600; }
   #tab-compare, #tab-results, #tab-chcell, #tab-about { height: auto; padding: 10px; }
 }
 .row label[hidden], .controls label[hidden] { display: none; }
+.nt { display: inline-block; padding: 0 4px; border: 1px solid var(--muted); border-radius: 3px; color: var(--muted); font-size: 11px; line-height: 15px; cursor: help; }
+p.rule { font-size: 12px; margin: 4px 0; }

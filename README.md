@@ -12,6 +12,10 @@ and myeloid neoplasms: **BM25** (bone marrow / CD34⁺ progenitors, 25 studies) 
   cell-type composition). Response modules follow the huCIRA paper's highly similar cytokine groups
   (Oesinghaus et al. 2025, Supplementary Table 11: Interferon response, γc cytokines, type 2,
   OSM/IL-17C/IGF-1), fixed across cell types; other cytokines are shown singly.
+- Donor-level tests follow a cell-count rule: a comparison × cell type is tested (reported with a q value
+  and included in the FDR correction) only if donors hold a median of ≥ 100 cells of that type in each arm;
+  other analyses are shown in grey, marked "n.t.", as descriptive effects without q values. One GSE285943
+  donor labelled "cytopenia (MF?)" (diagnosis uncertain) is excluded from the donor-level analyses.
 - Explore the original cell-level huCIRA analysis of the clonal haematopoiesis cohort (Heimlich 2024),
   side by side with its donor-level counterpart.
 

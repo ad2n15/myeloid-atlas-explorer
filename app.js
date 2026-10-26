@@ -322,6 +322,14 @@ const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&l
 const pretty = (s) => String(s).replace(/_/g, " ");
 const fmt = (v) => (Math.abs(v) >= 100 ? v.toFixed(0) : Math.abs(v) >= 1 ? v.toFixed(1) : v.toFixed(2));
 const fq = (q) => (q == null || !Number.isFinite(q) ? "n/a" : q < 0.001 ? "<0.001" : q.toPrecision(2));
+// donor-level cell-count rule (scripts/test_eligibility.py; pseudobulk_config.yaml: min_median_cells_tested):
+// an analysis is tested (reported, enters BH) only if donor pseudobulks hold a median of >= NT_MIN cells in each arm
+const NT_MIN = 100;
+const NT_TIP = `< ${NT_MIN} cells per donor in an arm (not tested)`;
+const isTested = (r) => r != null && r.tested !== false;          // tables built before the rule have no flag
+const sig = (r, thr = 0.1) => isTested(r) && r.q != null && r.q < thr;   // untested rows never count as significant
+const qText = (r) => (isTested(r) ? `q ${fq(r.q)}` : `n.t.: ${NT_TIP}`);
+const cellsText = (r) => (r && r.median_cells_test != null ? `; median ${Math.round(r.median_cells_test)} vs ${Math.round(r.median_cells_ref)} cells per donor` : "");
 const catOf = (fid, i) => { const f = S.field[fid]; return f ? f.categories[S.obs[fid][i]] : ""; };
 
 async function tooltip(view, i) {
@@ -626,13 +634,20 @@ async function buildResults() {
 function drawResults() {
   const R = S.results, g = $("#r-group").value, ct = $("#r-ct").value;
   let rows = R.meta.filter((r) => r.group === g && r.celltype === ct);
-  if ($("#r-sig").checked) rows = rows.filter((r) => r.q < 0.1);
+  const all = rows;
+  if ($("#r-sig").checked) rows = rows.filter((r) => sig(r));
   rows.sort((a, b) => a.effect - b.effect);
-  P("r-bar", [{ type: "scatter", mode: "markers", y: rows.map((r) => r.cytokine), x: rows.map((r) => r.effect),
+  const nt = all.filter((r) => !isTested(r)).length;
+  $("#r-nt").textContent = !all.length ? "" : nt === all.length
+    ? `Not tested: ${NT_TIP.replace(" (not tested)", "")} for this comparison and cell type. Effects are shown in grey (n.t.) as descriptive results, without q values.`
+    : nt ? `${nt} of ${all.length} signatures not tested (n.t., grey).` : "";
+  P("r-bar", [{ type: "scatter", mode: "markers+text", y: rows.map((r) => r.cytokine), x: rows.map((r) => r.effect),
     error_x: { type: "data", symmetric: false, array: rows.map((r) => r.ci_high - r.effect), arrayminus: rows.map((r) => r.effect - r.ci_low), color: css("--muted"), thickness: 1 },
-    marker: { size: 8, color: rows.map((r) => (r.q < 0.1 ? css("--accent") : GREY)) },
-    text: rows.map((r) => `${r.cytokine}: g ${r.effect.toFixed(2)} [${r.ci_low.toFixed(2)}, ${r.ci_high.toFixed(2)}], q ${fq(r.q)}; ${r.k} stud${r.k > 1 ? "ies" : "y"}, ${r.n_test} vs ${r.n_ref} donors`), hoverinfo: "text" }],
-  { height: Math.max(300, 18 * rows.length + 80), xaxis: { title: "effect size, Hedges' g (95% CI): >0 = higher in disease", zeroline: true, automargin: true }, margin: { l: 110, r: 20, t: 10, b: 50 } });
+    marker: { size: 8, color: rows.map((r) => (sig(r) ? css("--accent") : GREY)), symbol: rows.map((r) => (isTested(r) ? "circle" : "circle-open")),
+      line: { width: 1.5, color: rows.map((r) => (isTested(r) ? "rgba(0,0,0,0)" : GREY)) } },
+    text: rows.map((r) => (isTested(r) ? "" : "n.t.")), textposition: "middle right", textfont: { size: 10, color: css("--muted") }, cliponaxis: false,
+    hovertext: rows.map((r) => `${r.cytokine}: g ${r.effect.toFixed(2)} [${r.ci_low.toFixed(2)}, ${r.ci_high.toFixed(2)}], ${qText(r)}; ${r.k} stud${r.k > 1 ? "ies" : "y"}, ${r.n_test} vs ${r.n_ref} donors`), hoverinfo: "text" }],
+  { height: Math.max(300, 18 * rows.length + 80), xaxis: { title: "effect size, Hedges' g (95% CI): >0 = higher in disease; grey open = n.t.", zeroline: true, automargin: true }, margin: { l: 110, r: 30, t: 10, b: 50 } });
   $("#r-cyto").innerHTML = rows.slice().reverse().map((r) => `<option>${esc(r.cytokine)}</option>`).join("");
   drawForest();
 }
@@ -641,11 +656,20 @@ function drawForest() {
   const R = S.results, g = $("#r-group").value, ct = $("#r-ct").value, cy = $("#r-cyto").value;
   const st = R.study_effects.filter((r) => r.group === g && r.celltype === ct && r.cytokine === cy);
   const m = R.meta.find((r) => r.group === g && r.celltype === ct && r.cytokine === cy);
-  const y = st.map((r) => `${r.study} (${r.n_test} vs ${r.n_ref})`), x = st.map((r) => r.effect);
-  const data = [{ type: "scatter", mode: "markers", x, y, marker: { size: 9, color: css("--ink2") },
-    error_x: { type: "data", array: st.map((r) => 1.96 * r.se), color: css("--muted") }, name: "study", hovertemplate: "g %{x:.2f}<extra></extra>" }];
-  if (m) data.push({ type: "scatter", mode: "markers", x: [m.effect], y: [`pooled (q ${fq(m.q)})`], marker: { symbol: "diamond", size: 14, color: css("--accent") },
-    error_x: { type: "data", symmetric: false, array: [m.ci_high - m.effect], arrayminus: [m.effect - m.ci_low], color: css("--accent") }, name: "pooled", hovertemplate: "pooled g %{x:.2f}<extra></extra>" });
+  // untested study effects: open grey markers, never significant; when the pooled effect is tested they are not pooled
+  const pooledTested = isTested(m);
+  const y = st.map((r) => `${r.study} (${r.n_test} vs ${r.n_ref})${isTested(r) ? "" : pooledTested ? " n.t., not pooled" : " n.t."}`), x = st.map((r) => r.effect);
+  const data = [{ type: "scatter", mode: "markers", x, y,
+    marker: { size: 9, symbol: st.map((r) => (isTested(r) ? "circle" : "circle-open")), color: st.map((r) => (isTested(r) ? css("--ink2") : GREY)), line: { width: 1.5 } },
+    error_x: { type: "data", array: st.map((r) => 1.96 * r.se), color: css("--muted") }, name: "study",
+    hovertext: st.map((r) => `${r.study}: g ${r.effect.toFixed(2)}, score-test p ${fq(r.score_p)}${cellsText(r)}${isTested(r) ? "" : `<br>n.t.: ${NT_TIP}`}`), hoverinfo: "text" }];
+  if (m) {
+    const col = sig(m) ? css("--accent") : pooledTested ? css("--ink2") : GREY;
+    data.push({ type: "scatter", mode: "markers", x: [m.effect], y: [pooledTested ? `pooled (q ${fq(m.q)})` : "pooled (n.t.)"],
+      marker: { symbol: pooledTested ? "diamond" : "diamond-open", size: 14, color: col, line: { width: 1.5 } },
+      error_x: { type: "data", symmetric: false, array: [m.ci_high - m.effect], arrayminus: [m.effect - m.ci_low], color: col }, name: "pooled",
+      hovertext: [`pooled g ${m.effect.toFixed(2)} [${m.ci_low.toFixed(2)}, ${m.ci_high.toFixed(2)}], ${qText(m)}`], hoverinfo: "text" });
+  }
   P("r-forest", data, { showlegend: false, xaxis: { title: `${cy} in ${ctName(ct)}: effect size (g)`, zeroline: true, automargin: true }, margin: { l: 200, r: 20, t: 10, b: 50 } });
 }
 
@@ -655,13 +679,19 @@ function drawModules() {
   const mods = [...rank.keys()].sort((a, b) => rank.get(a) - rank.get(b) || a.localeCompare(b));
   const groups = [...new Set(rows.map((r) => r.group))].sort();
   const get = (m, g) => rows.find((r) => r.module === m && r.group === g);
-  const z = mods.map((m) => groups.map((g) => get(m, g)?.effect ?? null));
-  const text = mods.map((m) => groups.map((g) => { const r = get(m, g); return r ? `${r.effect.toFixed(2)}${r.q < 0.1 ? " *" : ""}` : ""; }));
-  P("m-heat", [{ type: "heatmap", z, x: groups.map(groupName), y: mods, text, texttemplate: "%{text}",
-    colorscale: DIV.map((c, i) => [i / (DIV.length - 1), c]), zmid: 0, zmin: -3, zmax: 3,
-    hovertemplate: "%{y} · %{x}: g %{z:.2f}<extra></extra>", colorbar: { title: { text: "g" }, thickness: 10 } }],
-  { height: Math.max(320, 34 * mods.length + 160), xaxis: { tickangle: -40, automargin: true }, yaxis: { automargin: true },
-    annotations: [{ text: "* q < 0.1", showarrow: false, xref: "paper", yref: "paper", x: 1, y: 1.04, font: { size: 11, color: css("--muted") } }] });
+  // tested cells on the colour scale; untested cells (n.t.) in a second, grey layer without q or *
+  const z = mods.map((m) => groups.map((g) => { const r = get(m, g); return r && isTested(r) ? r.effect : null; }));
+  const zNt = mods.map((m) => groups.map((g) => { const r = get(m, g); return r && !isTested(r) ? 0 : null; }));
+  const text = mods.map((m) => groups.map((g) => { const r = get(m, g); return !r ? "" : isTested(r) ? `${r.effect.toFixed(2)}${sig(r) ? " *" : ""}` : "n.t."; }));
+  const hover = mods.map((m) => groups.map((g) => { const r = get(m, g); if (!r) return "no analysis";
+    return `${esc(m)} · ${esc(groupName(g))}: g ${r.effect.toFixed(2)} [${r.ci_low.toFixed(2)}, ${r.ci_high.toFixed(2)}], ${qText(r)}; ${r.n_test} vs ${r.n_ref} donors`; }));
+  const x = groups.map(groupName);
+  P("m-heat", [{ type: "heatmap", z, x, y: mods, text, texttemplate: "%{text}", hovertext: hover, hoverinfo: "text",
+    colorscale: DIV.map((c, i) => [i / (DIV.length - 1), c]), zmid: 0, zmin: -3, zmax: 3, colorbar: { title: { text: "g" }, thickness: 10 } },
+  { type: "heatmap", z: zNt, x, y: mods, text: text.map((row, i) => row.map((t, j) => (zNt[i][j] === 0 ? t : ""))), texttemplate: "%{text}",
+    textfont: { color: "#555" }, hovertext: hover, hoverinfo: "text", colorscale: [[0, "#dcdcdc"], [1, "#dcdcdc"]], showscale: false, zmin: 0, zmax: 1 }],
+  { height: Math.max(320, 34 * mods.length + 160), xaxis: { tickangle: -40, automargin: true }, yaxis: { automargin: true }, margin: { l: 150, r: 20, t: 40, b: 80 },
+    annotations: [{ text: `* q < 0.1 · grey n.t. = not tested (< ${NT_MIN} cells per donor in an arm)`, showarrow: false, xref: "paper", yref: "paper", x: 0, xanchor: "left", y: 1.04, yanchor: "bottom", font: { size: 11, color: css("--muted") } }] });
 }
 
 function drawProp() {
@@ -800,8 +830,9 @@ function drawChForest() {
   traces.push({ type: "scatter", mode: "markers", name: "donor level (g, 95% CI)", xaxis: "x2", y, x: d.map((r) => r?.g_donor ?? null),
     error_x: { type: "data", symmetric: false, array: d.map((r) => (r && r.ci_high != null ? r.ci_high - r.g_donor : null)),
       arrayminus: d.map((r) => (r && r.ci_low != null ? r.g_donor - r.ci_low : null)), color: css("--muted") },
-    marker: { symbol: "diamond", size: 11, color: d.map((r) => (r && r.q_donor_score < 0.1 ? css("--accent") : css("--ink2"))) },
-    hovertext: d.map((r, i) => (r ? `${cts[i]} · donor level: g ${r.g_donor.toFixed(2)} [${r.ci_low?.toFixed(2)}, ${r.ci_high?.toFixed(2)}], q ${fq(r.q_donor_score)} (${r.n_test} vs ${r.n_ref} donors)` : "no donor-level test")), hoverinfo: "text" });
+    marker: { symbol: d.map((r) => (r && !dTested(r) ? "diamond-open" : "diamond")), size: 11, line: { width: 1.5 },
+      color: d.map((r) => (dSig(r) ? css("--accent") : r && !dTested(r) ? GREY : css("--ink2"))) },
+    hovertext: d.map((r, i) => (r ? `${cts[i]} · donor level: g ${r.g_donor.toFixed(2)} [${r.ci_low?.toFixed(2)}, ${r.ci_high?.toFixed(2)}], ${dQ(r)} (${r.n_test} vs ${r.n_ref} donors)` : "no donor-level test")), hoverinfo: "text" });
   P("c-forest", traces, { height: Math.max(320, 30 * cts.length + 120), grid: { rows: 1, columns: 2 },
     xaxis: { domain: [0, 0.47], title: `${cy}: cell-level NES`, zeroline: true },
     xaxis2: { domain: [0.53, 1], title: `${cy}: donor-level Hedges' g (95% CI)`, zeroline: true, anchor: "y" },
@@ -828,13 +859,19 @@ function drawChForestCyto() {
   traces.push({ type: "scatter", mode: "markers", name: "donor level (g, 95% CI)", xaxis: "x2", y, x: d.map((r) => r?.g_donor ?? null),
     error_x: { type: "data", symmetric: false, array: d.map((r) => (r && r.ci_high != null ? r.ci_high - r.g_donor : null)),
       arrayminus: d.map((r) => (r && r.ci_low != null ? r.g_donor - r.ci_low : null)), color: css("--muted") },
-    marker: { symbol: "diamond", size: 11, color: d.map((r) => (r && r.q_donor_score < 0.1 ? css("--accent") : css("--ink2"))) },
-    hovertext: d.map((r, i) => (r ? `${cys[i]} · donor level: g ${r.g_donor.toFixed(2)} [${r.ci_low?.toFixed(2)}, ${r.ci_high?.toFixed(2)}], q ${fq(r.q_donor_score)} (${r.n_test} vs ${r.n_ref} donors)` : "no donor-level test")), hoverinfo: "text" });
+    marker: { symbol: d.map((r) => (r && !dTested(r) ? "diamond-open" : "diamond")), size: 11, line: { width: 1.5 },
+      color: d.map((r) => (dSig(r) ? css("--accent") : r && !dTested(r) ? GREY : css("--ink2"))) },
+    hovertext: d.map((r, i) => (r ? `${cys[i]} · donor level: g ${r.g_donor.toFixed(2)} [${r.ci_low?.toFixed(2)}, ${r.ci_high?.toFixed(2)}], ${dQ(r)} (${r.n_test} vs ${r.n_ref} donors)` : "no donor-level test")), hoverinfo: "text" });
   P("c-forest", traces, { height: Math.max(340, 26 * cys.length + 130), grid: { rows: 1, columns: 2 },
     xaxis: { domain: [0, 0.47], title: `${ctName(ct)}: cell-level NES`, zeroline: true },
     xaxis2: { domain: [0.53, 1], title: `${ctName(ct)}: donor-level Hedges' g (95% CI)`, zeroline: true, anchor: "y" },
     yaxis: { autorange: "reversed", automargin: true, tickfont: { size: 10 } }, legend: { orientation: "h", y: -0.12 }, margin: { l: 220, r: 20, t: 10, b: 80 } });
 }
+
+// donor-level counterpart in ch_concordance: tested_donor (cell-count rule) and its meta-analysis q
+const dTested = (r) => r != null && r.tested_donor !== false;
+const dSig = (r) => dTested(r) && r.q_donor_score != null && r.q_donor_score < 0.1;
+const dQ = (r) => (dTested(r) ? `q ${fq(r.q_donor_score)}` : `n.t.: ${NT_TIP}`);
 
 function drawChCompare() {
   const con = $("#c-con").value, lfc = +$("#c-lfc").value, ct = $("#c-ct").value;
@@ -846,16 +883,18 @@ function drawChCompare() {
     { type: "bar", orientation: "h", y, x: rows.map((r) => r.NES_cell), xaxis: "x", name: "cell level (NES)",
       marker: { color: rows.map((r) => (r.q_cell < 0.05 ? css("--accent") : GREY)) }, hovertext: rows.map((r) => `cell level: NES ${r.NES_cell.toFixed(2)}, q ${fq(r.q_cell)}`), hoverinfo: "text" },
     { type: "bar", orientation: "h", y, x: rows.map((r) => r.g_donor), xaxis: "x2", name: "donor level (g)",
-      marker: { color: rows.map((r) => (r.q_donor_score < 0.1 ? css("--accent") : GREY)) }, hovertext: rows.map((r) => `donor level: g ${r.g_donor.toFixed(2)}, p ${fq(r.score_p)}, q ${fq(r.q_donor_score)} (${r.n_test} vs ${r.n_ref} donors)`), hoverinfo: "text" }],
+      marker: { color: rows.map((r) => (dSig(r) ? css("--accent") : GREY)), opacity: rows.map((r) => (dTested(r) ? 1 : 0.45)) },
+      text: rows.map((r) => (dTested(r) ? "" : "n.t.")), textposition: "outside", textfont: { size: 10, color: css("--muted") }, cliponaxis: false,
+      hovertext: rows.map((r) => `donor level: g ${r.g_donor.toFixed(2)}, p ${fq(r.score_p)}, ${dQ(r)} (${r.n_test} vs ${r.n_ref} donors)`), hoverinfo: "text" }],
   { height: Math.max(320, 18 * rows.length + 90), showlegend: false, grid: { rows: 1, columns: 2 },
     xaxis: { domain: [0, 0.47], title: "cell level: NES (blue = q < 0.05)", zeroline: true },
-    xaxis2: { domain: [0.53, 1], title: "donor level: Hedges' g (blue = q < 0.1)", zeroline: true, anchor: "y" },
+    xaxis2: { domain: [0.53, 1], title: "donor level: Hedges' g (blue = q < 0.1; faded n.t. = not tested)", zeroline: true, anchor: "y" },
     yaxis: { autorange: "reversed", automargin: true }, margin: { l: 110, r: 20, t: 10, b: 50 } });
   const agree = rows.filter((r) => Math.sign(r.NES_cell) === Math.sign(r.g_donor)).length;
   $("#c-cmp-table").innerHTML = `<p style="font-size:12.5px">Same direction in ${agree} of ${rows.length} cytokines;
-    significant at cell level: ${rows.filter((r) => r.q_cell < 0.05).length}; significant at donor level (q &lt; 0.1): ${rows.filter((r) => r.q_donor_score < 0.1).length}.</p>`;
+    significant at cell level: ${rows.filter((r) => r.q_cell < 0.05).length}; significant at donor level (q &lt; 0.1): ${rows.filter(dSig).length}${rows.some((r) => !dTested(r)) ? `; not tested at donor level (n.t., ${esc(NT_TIP.replace(" (not tested)", ""))}): ${rows.filter((r) => !dTested(r)).length}` : ""}.</p>`;
   table($("#c-cmp-table"), rows.map((r) => ({ cytokine: r.cytokine, "cell NES": r.NES_cell.toFixed(2), "cell q": fq(r.q_cell),
-    "donor g": r.g_donor.toFixed(2), "donor p": fq(r.score_p), "donor q": fq(r.q_donor_score), donors: `${r.n_test} vs ${r.n_ref}`,
+    "donor g": r.g_donor.toFixed(2), "donor p": fq(r.score_p), "donor q": dTested(r) ? fq(r.q_donor_score) : "n.t.", donors: `${r.n_test} vs ${r.n_ref}`,
     "same direction": Math.sign(r.NES_cell) === Math.sign(r.g_donor) ? "yes" : "no" })), true);
 }
 

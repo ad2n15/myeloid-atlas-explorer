@@ -22,6 +22,11 @@ Inference in the paper is donor-level.
   python3 scripts/build_explorer.py --atlas PBMC4 --n-cells 60000
   python3 scripts/build_explorer.py --atlas BM25 --n-cells 150000
   python3 scripts/build_explorer.py --results-only
+  python3 scripts/build_explorer.py --donor-fields BM25    # refresh donor fields after a donor_map.csv change
+
+Donor-level result tables carry `tested` (scripts/test_eligibility.py): a contrast x cell type is
+reported and enters BH only if the donor pseudobulks hold a median of >= min_median_cells_tested
+cells in each arm; untested rows keep their effect with q = NaN.
 """
 
 from __future__ import annotations
@@ -255,6 +260,78 @@ def module_score(Xd: sparse.csc_matrix, genes: list[int], bins: np.ndarray, rng:
 
 
 # ── atlas build ──────────────────────────────────────────────────────────────
+def donor_key_obs(f: h5py.File, rows: np.ndarray, rules: dict, skip=()) -> dict[str, pd.Series]:
+    """obs columns that identify a cell's donor unit (pseudobulk_aggregate.cell_unit_keys), for the given rows."""
+    cols = ("sample_id", "gse") + tuple(r["donor"]["column"] for r in rules["studies"].values()
+                                        if r["donor"]["source"] == "obs")
+    return {c: read_obs(f, c)[rows].reset_index(drop=True) for c in dict.fromkeys(cols)
+            if c in f["obs"] and c not in skip}
+
+
+def donor_table(atlas: str, obs: dict, rules: dict) -> pd.DataFrame:
+    """One row per exported cell: its unit in the curated donor map (metadata/donor_map.csv)."""
+    dm = pd.read_csv(REPO / "metadata/donor_map.csv", dtype=str)
+    dm = dm[dm["atlas"] == atlas]
+    dm["key"] = map_unit_keys(dm, rules).values
+    keys = cell_unit_keys(pd.DataFrame(obs), rules)
+    return dm.drop_duplicates("key").set_index("key").reindex(keys.values)
+
+
+def cat_field(out: Path, fid: str, label: str, values, colours=None, group=None) -> dict:
+    """Write obs/<fid>.bin (category codes, most frequent first) and return its meta.json field entry."""
+    s = pd.Series(values).astype(str).replace({"nan": "NA", "None": "NA", "": "NA"})
+    cats = s.value_counts().index.tolist()
+    codes = pd.Categorical(s, categories=cats).codes
+    dt = np.uint8 if len(cats) < 255 else np.uint16
+    write(out / f"obs/{fid}.bin", codes.astype(dt))
+    return {"id": fid, "label": label, "kind": "cat", "dtype": np.dtype(dt).name,
+            "categories": cats, "counts": [int(x) for x in s.value_counts().values],
+            "colours": colours(cats) if colours else palette(cats), "group": group}
+
+
+def sample_rows(f: h5py.File, lab: pd.DataFrame, n_cells: int, rng: np.random.Generator) -> np.ndarray:
+    """The exported subsample (level2 x study strata); the first draws of a generator seeded with SEED."""
+    gse = read_obs(f, "gse").astype(str)
+    strata = lab["level2"].astype(str).values + "|" + gse.values
+    return subsample(pd.Series(strata), n_cells, rng)
+
+
+def refresh_donor_fields(atlas: str) -> None:
+    """Rewrite the donor-level obs fields (DONOR_FIELDS) of an existing build from the current donor map.
+
+    The subsample is recomputed (same seed and strata) and checked against the exported Level 2 codes, so
+    cell i stays the same cell; genes, scores and embeddings are untouched."""
+    out = OUT / atlas.lower()
+    meta = json.loads((out / "meta.json").read_text())
+    rules = yaml.safe_load((REPO / "metadata/donor_rules.yaml").read_text())
+    lab = pd.read_parquet(REPO / f"metadata/annotation/{atlas.lower()}_labels.parquet")
+    with h5py.File(atlas_h5ad(atlas), "r") as f:
+        rows = None
+        for n_try in sorted({meta["n_cells"], 60_000, 150_000}):      # n_cells is the realised subsample size
+            r = sample_rows(f, lab, n_try, np.random.default_rng(SEED))
+            if len(r) == meta["n_cells"]:
+                rows = r
+                break
+        if rows is None:
+            raise SystemExit(f"{atlas}: could not reproduce the {meta['n_cells']:,}-cell subsample")
+        obs = donor_key_obs(f, rows, rules)
+    f2 = next(x for x in meta["fields"] if x["id"] == "level2")
+    codes = np.frombuffer((out / "obs/level2.bin").read_bytes(), np.dtype(f2["dtype"]).newbyteorder("<"))
+    if not np.array_equal(np.array(f2["categories"])[codes], lab["level2"].astype(str).values[rows]):
+        raise SystemExit(f"{atlas}: recomputed subsample does not match the exported Level 2 labels")
+    d = donor_table(atlas, obs, rules)
+    pos = {x["id"]: i for i, x in enumerate(meta["fields"])}
+    changed = []
+    for fid, label in DONOR_FIELDS:
+        new = cat_field(out, fid, label, d[fid].fillna("NA").values, None, "Donors (curated)")
+        old = meta["fields"][pos[fid]]
+        if (old["categories"], old["counts"]) != (new["categories"], new["counts"]):
+            changed.append(fid)
+        meta["fields"][pos[fid]] = new
+    (out / "meta.json").write_text(json.dumps(meta, separators=(",", ":")))
+    print(f"{atlas}: donor fields refreshed ({len(rows):,} cells); changed: {', '.join(changed) or 'none'}")
+
+
 def build_atlas(atlas: str, n_cells: int) -> None:
     rng = np.random.default_rng(SEED)
     out = OUT / atlas.lower()
@@ -266,15 +343,11 @@ def build_atlas(atlas: str, n_cells: int) -> None:
     with h5py.File(atlas_h5ad(atlas), "r") as f:
         barcodes = read_obs(f, f["obs"].attrs["_index"]).astype(str).values
         gse = read_obs(f, "gse").astype(str)
-        strata = lab["level2"].astype(str).values + "|" + gse.values
-        rows = subsample(pd.Series(strata), n_cells, rng)
+        rows = sample_rows(f, lab, n_cells, rng)     # rng continues into the per-cell scores
         print(f"{atlas}: {len(rows):,} of {len(barcodes):,} cells", flush=True)
         obs = {c: read_obs(f, c)[rows].reset_index(drop=True) for _, _, c, _ in fields
                if c in f["obs"]}
-        for c in ("sample_id",) + tuple(r["donor"]["column"] for r in rules["studies"].values()
-                                         if r["donor"]["source"] == "obs"):
-            if c in f["obs"] and c not in obs:
-                obs[c] = read_obs(f, c)[rows].reset_index(drop=True)
+        obs.update(donor_key_obs(f, rows, rules, skip=obs))
         obs["gse"] = gse[rows].reset_index(drop=True)
         umap = ad.io.read_elem(f["obsm"]["X_umap"])[rows]
         var_names = pd.Index(np.asarray(ad.io.read_elem(f["var"][f["var"].attrs["_index"]])).astype(str))
@@ -305,14 +378,7 @@ def build_atlas(atlas: str, n_cells: int) -> None:
 
     # labels
     def add_cat(fid, label, values, colours=None, group=None):
-        s = pd.Series(values).astype(str).replace({"nan": "NA", "None": "NA", "": "NA"})
-        cats = s.value_counts().index.tolist()
-        codes = pd.Categorical(s, categories=cats).codes
-        dt = np.uint8 if len(cats) < 255 else np.uint16
-        write(out / f"obs/{fid}.bin", codes.astype(dt))
-        meta["fields"].append({"id": fid, "label": label, "kind": "cat", "dtype": np.dtype(dt).name,
-                               "categories": cats, "counts": [int(x) for x in s.value_counts().values],
-                               "colours": colours(cats) if colours else palette(cats), "group": group})
+        meta["fields"].append(cat_field(out, fid, label, values, colours, group))
 
     def add_num(fid, label, values, group=None):
         v = pd.to_numeric(pd.Series(values), errors="coerce").values.astype(float)
@@ -355,11 +421,7 @@ def build_atlas(atlas: str, n_cells: int) -> None:
             add_num(fid, label, obs[col].values, grp)
 
     # donor-level metadata from the curated donor map
-    dm = pd.read_csv(REPO / "metadata/donor_map.csv", dtype=str)
-    dm = dm[dm["atlas"] == atlas]
-    dm["key"] = map_unit_keys(dm, rules).values
-    keys = cell_unit_keys(pd.DataFrame(obs), rules)
-    d = dm.drop_duplicates("key").set_index("key").reindex(keys.values)
+    d = donor_table(atlas, obs, rules)
     for fid, label in DONOR_FIELDS:
         add_cat(fid, label, d[fid].fillna("NA").values, None, "Donors (curated)")
 
@@ -445,32 +507,62 @@ def build_results() -> None:
     out = OUT / "results"
     out.mkdir(parents=True, exist_ok=True)
 
-    def dump(name, df, cols, rnd=4):
+    def dump(name, df, cols, rnd=None):
         df = df[[c for c in cols if c in df.columns]].copy()
         for c in df.select_dtypes("float").columns:
-            df[c] = df[c].round(rnd)
+            df[c] = df[c].round((rnd or {}).get(c, 4))
         recs = json.loads(df.to_json(orient="split", index=False))
         (out / f"{name}.json").write_text(json.dumps({"columns": recs["columns"], "data": recs["data"]},
                                                     separators=(",", ":")))
     rd = lambda p: pd.read_csv(REPO / p, sep="\t")  # noqa: E731
-    dump("meta", rd("docs/phase1/meta_main.tsv"),
+    # tested: the cell-count rule (scripts/test_eligibility.py); untested rows keep their effect, q = NaN
+    dump("meta", tested(rd("docs/phase1/meta_main.tsv")),
          ["group", "celltype", "cytokine", "k", "studies", "n_test", "n_ref", "effect", "ci_low", "ci_high", "p", "q",
-          "i2"])
-    dump("study_effects", rd("docs/phase1/study_effects_main.tsv"),
-         ["group", "celltype", "cytokine", "study", "condition", "timepoint", "n_test", "n_ref", "effect", "se",
-          "score_p"])
+          "i2", "tested"])
+    dump("study_effects", tested(rd("docs/phase1/study_effects_main.tsv")),
+         ["group", "celltype", "cytokine", "study", "condition", "timepoint", "n_test", "n_ref", "median_cells_test",
+          "median_cells_ref", "effect", "se", "score_p", "tested"], rnd={"median_cells_test": 1, "median_cells_ref": 1})
     mods = read_modules()
     ranks = mods.drop_duplicates("module")[["module", "module_rank", "module_grouped"]]
-    dump("module_meta", rd("docs/phase2/modules/module_meta.tsv").merge(ranks, on="module", how="left"),
-         ["group", "celltype", "module", "module_rank", "module_grouped", "k", "studies", "n_test", "n_ref", "effect", "ci_low", "ci_high", "p", "q"])
+    dump("module_meta", tested(rd("docs/phase2/modules/module_meta.tsv")).merge(ranks, on="module", how="left"),
+         ["group", "celltype", "module", "module_rank", "module_grouped", "k", "studies", "n_test", "n_ref", "effect",
+          "ci_low", "ci_high", "p", "q", "tested"])
     dump("propeller", rd("docs/phase2/composition/propeller.tsv"),
          ["contrast", "compartment", "study", "condition", "celltype", "prop_test", "prop_ref", "log2_ratio", "p",
           "q", "n_test", "n_ref"])
-    dump("studies", rd("docs/data_collection/atlas_studies.tsv"), list(rd("docs/data_collection/atlas_studies.tsv").columns))
+    studies = studies_current_donors(rd("docs/data_collection/atlas_studies.tsv"))
+    dump("studies", studies, list(studies.columns))
     dump("modules", mods, ["celltype", "cytokine", "module", "module_rank", "module_grouped", "n_genes",
                            "frac_ifn_shared", "frac_cell_cycle"])
     build_ch_cell(out)
     print(f"wrote {out}")
+
+
+def tested(df: pd.DataFrame) -> pd.DataFrame:
+    """Normalise the `tested` flag to bool and enforce q = NaN for untested rows (they never enter BH)."""
+    if "tested" not in df.columns:
+        raise SystemExit("result table has no `tested` column: re-run the donor-level analysis")
+    df = df.copy()
+    df["tested"] = df["tested"].map({True: True, False: False, "True": True, "False": False}).astype(bool)
+    if "q" in df.columns:
+        df.loc[~df["tested"], "q"] = np.nan
+    return df
+
+
+def studies_current_donors(st: pd.DataFrame) -> pd.DataFrame:
+    """atlas_studies.tsv with donors_by_condition recomputed from the current metadata/donor_map.csv
+    (as scripts/summarise_data_collection.py does), so a relabelled or excluded donor shows at once;
+    a study's entry is replaced only when its counts differ (keeps the original order otherwise)."""
+    dm = pd.read_csv(REPO / "metadata/donor_map.csv", dtype=str)
+    dm["condition"] = dm["condition"].fillna("unassigned")
+    dm = dm[dm["donor"].notna()].drop_duplicates(["atlas", "study", "donor"])
+    parse = lambda s: dict((k, int(v)) for k, v in (x.rsplit(" ", 1) for x in str(s).split(", ") if " " in x))  # noqa: E731
+    st = st.copy()
+    for i, r in st.iterrows():
+        vc = dm.loc[(dm["atlas"] == r["atlas"]) & (dm["study"] == r["study"]), "condition"].value_counts()
+        if len(vc) and parse(r["donors_by_condition"]) != vc.to_dict():
+            st.at[i, "donors_by_condition"] = ", ".join(f"{k} {v}" for k, v in vc.items())
+    return st
 
 
 def build_ch_cell(out: Path) -> None:
@@ -508,13 +600,17 @@ def build_ch_cell(out: Path) -> None:
     dump_table(out / "ch_cell.json", cell, rnd=6)
     conc = []
     for name, lfc in (("main", 1.0), ("lfc0.8", 0.8)):
-        meta = pd.read_csv(REPO / f"docs/phase1/meta_{name}.tsv", sep="\t")[["group", "celltype", "cytokine", "q", "ci_low", "ci_high"]]
+        meta = tested(pd.read_csv(REPO / f"docs/phase1/meta_{name}.tsv", sep="\t"))[
+            ["group", "celltype", "cytokine", "q", "ci_low", "ci_high", "tested"]]
         c = pd.read_csv(REPO / f"docs/phase2/hucira_prerank/concordance_{name}.tsv", sep="\t")
         c = c[c["contrast"].astype(str).str.startswith("CXG_HEIMLICH_2024__")].copy()
         c["group"] = c["contrast"].str.split("__").str[1].str.replace("_vs_", " vs ")
-        c = c.merge(meta.rename(columns={"q": "q_donor_score"}), on=["group", "celltype", "cytokine"], how="left")
+        c = c.merge(meta.rename(columns={"q": "q_donor_score", "tested": "tested_donor"}),
+                    on=["group", "celltype", "cytokine"], how="left")
+        c["tested_donor"] = c["tested_donor"].eq(True)   # no donor-level row: not tested
         conc.append(c.assign(lfc=lfc)[["group", "lfc", "celltype", "cytokine", "NES_cell", "q_cell", "n_test", "n_ref",
-                                       "g_donor", "ci_low", "ci_high", "score_p", "q_donor_score"]].rename(columns={"group": "contrast"}))
+                                       "g_donor", "ci_low", "ci_high", "score_p", "q_donor_score",
+                                       "tested_donor"]].rename(columns={"group": "contrast"}))
     dump_table(out / "ch_concordance.json", pd.concat(conc, ignore_index=True), rnd=6)
     print(f"CH cell level: {len(cell)} tests; concordance rows: {sum(len(c) for c in conc)}")
 
@@ -532,7 +628,12 @@ def main() -> None:
     ap.add_argument("--atlas", choices=["BM25", "PBMC4"])
     ap.add_argument("--n-cells", type=int, default=150_000)
     ap.add_argument("--results-only", action="store_true")
+    ap.add_argument("--donor-fields", choices=["BM25", "PBMC4"],
+                    help="only refresh the donor-level fields of an existing atlas build from metadata/donor_map.csv")
     a = ap.parse_args()
+    if a.donor_fields:
+        refresh_donor_fields(a.donor_fields)
+        return
     if a.results_only or not a.atlas:
         build_results()
     if a.atlas:

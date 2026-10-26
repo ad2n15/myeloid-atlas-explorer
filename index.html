@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Myeloid Atlas Explorer</title>
 <meta name="description" content="Interactive explorer of curated bone-marrow (BM25) and blood (PBMC4) single-cell atlases of clonal haematopoiesis and myeloid neoplasms: genes, cytokine responses, cell types and donor-level results.">
-<link rel="stylesheet" href="style.css?v=1793025223">
+<link rel="stylesheet" href="style.css?v=1793039212">
 <script src="https://cdn.jsdelivr.net/npm/plotly.js-dist-min@2.35.2/plotly.min.js" defer></script>
 </head>
 <body>
@@ -158,6 +158,8 @@
       <label>Cell type <select id="r-ct"></select></label>
       <label><input type="checkbox" id="r-sig"> only q &lt; 0.1</label>
     </div>
+    <p class="muted rule"><span class="nt" title="&lt; 100 cells per donor in an arm (not tested)">n.t.</span> = not tested: a comparison × cell type is tested (and enters the FDR correction) only if donors hold a median of ≥ 100 cells of that type in each arm; otherwise its effect is shown in grey without a q value.</p>
+    <p class="muted" id="r-nt"></p>
     <div id="r-bar" class="chart"></div>
     <div class="row"><label>Cytokine for study-level forest plot <select id="r-cyto"></select></label></div>
     <div id="r-forest" class="chart short"></div>
@@ -258,6 +260,7 @@
   <ul>
     <li>Per-cell scores are descriptive. Cells from one person are not independent, so the paper's statistics are computed per donor (Results tab).</li>
     <li>Studies differ in tissue, cell sorting and chemistry. Comparisons across studies mix disease with batch; compare conditions within a study.</li>
+    <li>Donor-level tests need enough cells: a comparison × cell type is tested (reported with a q value and included in the FDR correction) only if the donor pseudobulks hold a median of ≥ 100 cells in each arm; others are marked <span class="nt" title="&lt; 100 cells per donor in an arm (not tested)">n.t.</span> and shown in grey as descriptive effects. The GSE285943 donor labelled ‘cytopenia (MF?)’ by the authors (diagnosis uncertain) is excluded from the donor-level analyses; its cells remain in the maps (condition <i>cytopenia MF uncertain</i>).</li>
     <li>inferCNV calls (BM25) were not specific in our analysis and are shown for transparency only.</li>
   </ul>
   <h3>Methods in brief</h3>
@@ -276,6 +279,6 @@
 </section>
 </main>
 
-<script type="module" src="app.js?v=1793025223"></script>
+<script type="module" src="app.js?v=1793039212"></script>
 </body>
 </html>
