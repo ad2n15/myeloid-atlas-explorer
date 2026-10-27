@@ -179,6 +179,14 @@ function makeView(id) {
 }
 const other = (v) => V.find((w) => w !== v && w.on);
 const fit = (v) => v.plot.zoomToArea({ x: -1, y: -1, width: 2, height: 2 });
+// fit the maps; when they are linked only the first is fitted and the camera link carries it to the second.
+// Fitting both made them fight: maps of different heights have different fitted zooms, and each copied its
+// camera to the other, so they kept swapping zoom (a visible shake) until the transitions ran out.
+function fitAll() {
+  const on = V.filter((w) => w.on);
+  if (on.length > 1 && $("#link-zoom").checked) fit(on[0]);
+  else on.forEach(fit);
+}
 // copy one view's camera to the other; equal matrices are skipped, so the echo event ends the exchange
 const sameView = (a, b) => a && b && a.length === b.length && a.every((x, i) => Math.abs(x - b[i]) < 1e-6);
 function setCamera(w, view) {
@@ -487,7 +495,7 @@ async function setSplit(on) {
   for (const v of V) v.plot.set({ width: "auto", height: "auto" });
   await new Promise((r) => requestAnimationFrame(r));
   if (on) await draw(B);
-  for (const v of V.filter((w) => w.on)) fit(v);
+  fitAll();
   writeHash();
 }
 
@@ -937,7 +945,7 @@ async function switchAtlas(a, colourA, colourB) {
   $("#dot-genes").value = a === "PBMC4" ? "CD14, FCGR3A, CD3E, CD8A, NKG7, MS4A1, IL1B, IFNG" : "CD34, PROM1, MPO, GATA1, CD14, CD3E, IL1B, IL1RAP, IL3RA, MPL";
   if ($("#dist-kind").value === "gene") $("#dist-name").value = a === "PBMC4" ? "IFNG" : "IL1B";
   await drawAll();
-  for (const v of V.filter((w) => w.on)) fit(v);
+  fitAll();
 }
 
 function applyTheme() { for (const v of V) v.plot.set({ backgroundColor: css("--plot-bg"), pointColorHover: css("--ink"), lassoColor: css("--accent") }); }
@@ -962,10 +970,10 @@ async function main() {
   $("#intro-close").onclick = () => { $("#intro").hidden = true; try { localStorage.setItem("introHidden", "1"); } catch { /* ignore */ } };
   $("#split").onclick = () => setSplit(!V[1].on);
   $("#link-zoom").onchange = (e) => { if (e.target.checked && V[1].on) setCamera(V[1], V[0].plot.get("cameraView")); };
-  $("#emb").onchange = async (e) => { S.emb = e.target.value; await drawAll(); for (const v of V.filter((w) => w.on)) fit(v); };
+  $("#emb").onchange = async (e) => { S.emb = e.target.value; await drawAll(); fitAll(); };
   $("#psize").oninput = () => { for (const v of V) v.plot.set({ pointSize: +$("#psize").value }); };
   $("#filter-reset").onclick = () => { S.filters = {}; $$("#filters .chip").forEach((c) => c.classList.remove("on")); updateFilterCount(); drawAll(); };
-  $("#reset-view").onclick = () => { for (const v of V.filter((w) => w.on)) fit(v); };
+  $("#reset-view").onclick = () => { fitAll(); };
   $("#sel-clear").onclick = () => { for (const v of V) v.plot.deselect({ preventEvent: true }); selectionFrom(V[0], null); };
   $("#dot-go").onclick = () => run("#dot-plot", dotPlot);
   $("#dot-preset").onchange = (e) => {
@@ -986,7 +994,7 @@ async function main() {
   $("#xt-go").onclick = () => run("#xt-plot", async () => crossTab());
 
   await switchAtlas(h.get("atlas") === "PBMC4" ? "PBMC4" : "BM25", h.get("c"), h.get("c2"));
-  if (h.get("emb") && S.meta.l2umap[h.get("emb")]) { S.emb = h.get("emb"); $("#emb").value = S.emb; await drawAll(); for (const v of V.filter((w) => w.on)) fit(v); }
+  if (h.get("emb") && S.meta.l2umap[h.get("emb")]) { S.emb = h.get("emb"); $("#emb").value = S.emb; await drawAll(); fitAll(); }
   if (h.get("split") !== "0") await setSplit(true);
   showTab(h.get("tab") || "explore");
 }
